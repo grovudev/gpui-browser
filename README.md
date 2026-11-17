@@ -1,8 +1,22 @@
-# gpui-cef
+# gpui-browser
 
-[![CI](https://github.com/grovudev/gpui-cef/actions/workflows/ci.yml/badge.svg)](https://github.com/grovudev/gpui-cef/actions/workflows/ci.yml)
+[![CI](https://github.com/grovudev/gpui-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/grovudev/gpui-browser/actions/workflows/ci.yml)
 
 Embed a real browser engine into [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui).
+
+## About this fork
+
+This repository is a fork of [`bokuweb/gpui-cef`](https://github.com/bokuweb/gpui-cef).
+It was created to develop and publish the reusable CEF integration built for the
+Unotrop desktop application, independently from the application itself.
+
+The fork focuses on keeping browser-engine functionality reusable: CEF IPC and
+protocol handling, browser automation scripts, and their assets live in the
+`gpui-cef` crate, while application-specific browser UI stays in its consumer.
+The crate is intended to provide off-screen Chromium rendering in GPUI across
+macOS, Windows, and Linux.
+
+The Rust package is still named `gpui-cef`.
 
 | OS | Engine | How it is composited |
 |---|---|---|
@@ -449,4 +463,3 @@ Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or the
 [MIT license](LICENSE-MIT), at your option, as declared by the workspace's Cargo
 metadata. Dependencies, including the bundled browser engine, retain their own
 licenses.
-# gpui-browser
