@@ -158,8 +158,16 @@ impl Webview {
             })
             .with_on_page_load_handler({
                 let is_loading = is_loading.clone();
-                move |event, _url| {
-                    is_loading.set(matches!(event, PageLoadEvent::Started));
+                let mailbox = mailbox.clone();
+                move |event, url| match event {
+                    PageLoadEvent::Started => {
+                        is_loading.set(true);
+                        mailbox.emit(WebviewEvent::PageStarted(url.to_owned()));
+                    }
+                    PageLoadEvent::Finished => {
+                        is_loading.set(false);
+                        mailbox.emit(WebviewEvent::PageFinished(url.to_owned()));
+                    }
                 }
             })
             .with_bounds(Rect {
@@ -215,7 +223,9 @@ impl Webview {
     /// Navigates to another URL.
     pub fn load_url(&self, url: &str) {
         if let Some(webview) = &self.webview {
+            self.is_loading.set(true);
             if let Err(err) = webview.load_url(url) {
+                self.is_loading.set(false);
                 log::error!("failed to load {url}: {err}");
             }
         }
@@ -224,16 +234,19 @@ impl Webview {
     /// Reloads the current page. WebView2 has no direct API for it, so this goes
     /// through script.
     pub fn reload(&self) {
+        self.is_loading.set(true);
         self.eval("location.reload()");
     }
 
     /// Goes back in history.
     pub fn go_back(&self) {
+        self.is_loading.set(true);
         self.eval("history.back()");
     }
 
     /// Goes forward in history.
     pub fn go_forward(&self) {
+        self.is_loading.set(true);
         self.eval("history.forward()");
     }
 
@@ -246,9 +259,19 @@ impl Webview {
         }
     }
 
+    /// Evaluates JavaScript asynchronously and posts its result as an
+    /// untrusted [`crate::WebviewEvent::Message`].
+    pub fn eval_async(&self, request_id: u64, token: &str, source: &str) -> crate::Result<()> {
+        let script = crate::eval_async_script(request_id, token, source)
+            .map_err(|error| crate::Error::Backend(error.to_string()))?;
+        self.eval(&script);
+        Ok(())
+    }
+
     /// Stops the current load.
     pub fn stop(&self) {
         self.eval("window.stop()");
+        self.is_loading.set(false);
     }
 
     /// WebView2 shows JavaScript dialogs itself and never emits
@@ -294,6 +317,17 @@ impl Webview {
     /// Whether a page is currently loading.
     pub fn is_loading(&self) -> bool {
         self.is_loading.get()
+    }
+
+    /// Returns a low-cost snapshot of URL, title, loading, and history state.
+    pub fn state(&self) -> crate::WebviewState {
+        crate::WebviewState {
+            url: self.url(),
+            title: self.title(),
+            is_loading: self.is_loading(),
+            can_go_back: None,
+            can_go_forward: None,
+        }
     }
 
     /// Whether there is history to go back to.

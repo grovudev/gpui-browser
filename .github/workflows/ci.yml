@@ -39,7 +39,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cef
-          key: cef-${{ runner.os }}-${{ runner.arch }}-151.3.24
+          key: cef-${{ runner.os }}-${{ runner.arch }}-156.6.0
 
       - uses: Swatinem/rust-cache@v2
 
@@ -64,11 +64,43 @@ jobs:
       - name: Check isolated AppKit and window input
         run: node examples/browser/input-e2e.mjs
 
-  windows:
-    name: Windows (WebView2 backend)
-    runs-on: windows-latest
+  linux:
+    name: Linux (CEF backend)
+    runs-on: ubuntu-latest
+    env:
+      CEF_PATH: ${{ github.workspace }}/.cef
     steps:
       - uses: actions/checkout@v4
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libfontconfig1-dev libfreetype6-dev \
+            libx11-dev libx11-xcb-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxcb-randr0-dev libxcb-xkb-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libwayland-dev libgtk-3-dev libgbm-dev
+      - name: Cache the CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: .cef
+          key: cef-${{ runner.os }}-${{ runner.arch }}-156.6.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo run -p xtask
+
+  windows:
+    name: Windows (CEF backend)
+    runs-on: windows-latest
+    env:
+      CEF_PATH: ${{ github.workspace }}/.cef
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the CEF distribution
+        uses: actions/cache@v4
+        with:
+          path: .cef
+          key: cef-${{ runner.os }}-${{ runner.arch }}-156.6.0
       - uses: Swatinem/rust-cache@v2
       - run: rustup component add clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p xtask

@@ -1,22 +1,20 @@
 //! Embed a real browser engine as a [gpui] element.
 //!
-//! The backend is chosen per platform:
+//! CEF provides off-screen rendering on all supported desktop platforms:
 //!
 //! | OS      | Engine                        | How it is composited |
 //! |---------|-------------------------------|----------------------|
-//! | macOS   | Chromium (CEF)                | Rendered off-screen and drawn as an ordinary gpui element, so it takes part in gpui's paint order: it can be clipped, rounded, and have other elements drawn on top of it. |
-//! | Windows | WebView2 (wry)                | A native child window parented to the gpui window and kept in sync with the laid-out rect. Being a child HWND, it is **always in front of** everything gpui draws. |
+//! | macOS   | Chromium (CEF)                | Off-screen rendering, composited as an ordinary gpui element. |
+//! | Windows | Chromium (CEF)                | Off-screen rendering, composited as an ordinary gpui element. |
+//! | Linux   | Chromium (CEF)                | Off-screen rendering, composited as an ordinary gpui element. |
 //!
-//! Why Chromium on macOS: `WKWebView` can only be attached as a child view, so it
-//! never becomes part of gpui's scene — no rounded clipping, nothing on top of
-//! it. CEF supports off-screen rendering, which makes the page just another
-//! texture gpui can composite. WebView2 has no public off-screen API, so the
-//! Windows backend uses the straightforward child-window approach.
+//! The CEF binaries are downloaded by `cef-dll-sys` during the first build.
+//! `cargo run -p xtask` assembles a runnable platform bundle with those files.
 //!
 //! # Usage
 //!
-//! On macOS, CEF has to be brought up around gpui rather than inside it — see
-//! [`init`] and [`Runtime::start`].
+//! Initialize CEF with [`init`] before creating GPUI's application, then call
+//! [`Runtime::start`] inside its application closure.
 //!
 //! ```no_run
 //! fn main() {
@@ -26,8 +24,8 @@
 //!     // Hand the closure a *clone*. Moving the value itself in would run
 //!     // cef_shutdown() the moment the closure returns.
 //!     let cef = runtime.clone();
-//!     gpui_platform::application().run(move |cx| {
-//!         // 2. Once gpui has created NSApp, initialize CEF.
+//!     gpui::application().run(move |cx| {
+//!         // 2. Initialize CEF inside the GPUI application closure.
 //!         cef.start(cx).unwrap();
 //!         // ... cx.open_window(..., |window, cx| cx.new(|cx| Webview::new(...)))
 //!     });
@@ -51,20 +49,28 @@
 #![allow(clippy::needless_doctest_main)]
 
 mod event;
-#[cfg(any(target_os = "macos", test))]
+mod ipc;
 mod message;
 mod options;
 mod platform;
 
+pub mod automation;
+
+pub use automation::ViewportMode;
 pub use event::{
     DialogId, DownloadId, DownloadState, FileDialogId, FileDialogMode, JsDialogKind,
-    TerminationStatus, WebviewEvent,
+    TerminationStatus, WebviewEvent, WebviewState,
+};
+pub use ipc::{
+    AsyncScriptResult, ConsoleEntry, DomElementInfo, DomImageInfo, DomSnapshotPayload, IpcMessage,
+    NetworkEntry, NetworkLogPayload, format_compact_snapshot, format_network_log,
+    generate_ipc_token, origin_from_url, parse_ipc_message,
 };
 pub use options::{
     ClipboardAccessFilter, CookieSpec, DialogPolicy, NavigationFilter, NavigationRequest,
     PdfMargins, PdfOptions, PopupPolicy, RuntimeOptions, SameSite, WebviewOptions,
 };
-pub use platform::{init, Runtime, Webview};
+pub use platform::{Runtime, Webview, init};
 
 /// What a console line starts with when it is a message for the application.
 /// The page never needs to spell it out: [`post_message_script`] does.
@@ -85,11 +91,58 @@ pub fn message_payload(line: &str) -> Option<&str> {
     line.strip_prefix(MESSAGE_PREFIX)
 }
 
+/// Builds an asynchronous JavaScript evaluation wrapper. Its untrusted result
+/// is posted as a [`WebviewEvent::Message`] using the `eval_result` envelope;
+/// validate it with [`parse_ipc_message`] before accepting it.
+pub fn eval_async_script(
+    request_id: u64,
+    token: &str,
+    source: &str,
+) -> std::result::Result<String, serde_json::Error> {
+    let token = serde_json::to_string(token)?;
+    let post = post_message_script(
+        "JSON.stringify({kind:'eval_result', token, request_id:requestId, ok, result})",
+    );
+    Ok(format!(
+        r#"(() => {{
+  const token = {token};
+  const requestId = {request_id};
+  let settled = false;
+  let timer;
+  const finish = (ok, value) => {{
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    let result;
+    try {{
+      result = typeof value === 'string' ? value : JSON.stringify(value);
+      if (result === undefined) result = String(value);
+    }} catch (error) {{
+      result = String(error);
+      ok = false;
+    }}
+    result = String(result).slice(0, 8000);
+    {post}
+  }};
+  timer = setTimeout(() => finish(false, 'Script timed out after 5 seconds'), 5000);
+  (async () => {{
+    try {{
+      const value = await (async () => {{
+{source}
+      }})();
+      finish(true, value);
+    }} catch (error) {{
+      finish(false, error && error.message ? error.message : String(error));
+    }}
+  }})();
+}})();"#
+    ))
+}
+
 /// Something went wrong bringing up the browser engine.
 #[derive(Debug)]
 pub enum Error {
-    /// The Chromium Embedded Framework could not be loaded. On macOS the
-    /// executable has to live inside a bundled `.app`.
+    /// The Chromium Embedded Framework could not be loaded from the platform bundle.
     LibraryLoad(String),
     /// `cef_initialize` failed.
     Initialize,
@@ -104,8 +157,8 @@ impl std::fmt::Display for Error {
         match self {
             Error::LibraryLoad(path) => write!(
                 f,
-                "failed to load the Chromium Embedded Framework (looked next to {path}). \
-                 the executable must live inside a bundled .app — see `just bundle`"
+                "failed to load the Chromium Embedded Framework near {path}; \
+                 build the platform bundle with `cargo run -p xtask`"
             ),
             Error::Initialize => write!(f, "cef_initialize() failed"),
             Error::Unsupported(what) => write!(f, "not supported on this platform: {what}"),
@@ -135,5 +188,16 @@ mod tests {
             Some(r#"{"a":1}"#)
         );
         assert_eq!(message_payload("an ordinary log line"), None);
+    }
+
+    #[test]
+    fn async_eval_wraps_source_in_a_tokenized_result_message() {
+        let script = eval_async_script(42, "session\"token", "return document.title;").unwrap();
+
+        assert!(script.contains(r#"const token = "session\"token";"#));
+        assert!(script.contains("const requestId = 42;"));
+        assert!(script.contains("kind:'eval_result'"));
+        assert!(script.contains("return document.title;"));
+        assert!(script.contains("Script timed out after 5 seconds"));
     }
 }

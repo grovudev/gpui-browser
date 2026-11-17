@@ -4,7 +4,7 @@
 //! Linux should work on the CEF side, so pointing the `#[path]` in [`super`] at
 //! the cef backend would probably be enough. That is untested, hence this stub.
 
-use gpui::{div, App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, Window};
+use gpui::{App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, Window, div};
 
 use crate::{RuntimeOptions, WebviewOptions};
 
@@ -61,6 +61,26 @@ impl Webview {
     pub fn stop(&self) {}
     /// Runs JavaScript in the page (no-op).
     pub fn eval(&self, _script: &str) {}
+    /// Asynchronous evaluation needs a browser, which this platform does not have.
+    pub fn eval_async(&self, _request_id: u64, _token: &str, _source: &str) -> crate::Result<()> {
+        Err(crate::Error::Unsupported("JavaScript evaluation"))
+    }
+    /// Sets the page initialization script (no-op).
+    pub fn set_document_start_script(&self, _script: Option<String>) {}
+    /// Sets the request User-Agent header (no-op).
+    pub fn set_user_agent(&self, _user_agent: Option<String>) {}
+    /// Hides or shows the browser (no-op).
+    pub fn set_visible(&self, _visible: bool) {}
+    /// Opens developer tools (no-op).
+    pub fn show_devtools(&self) {}
+    /// There is no browser cookie store on this platform.
+    pub fn get_cookies_json(
+        &self,
+        _url: Option<&str>,
+        _include_values: bool,
+    ) -> crate::Result<String> {
+        Err(crate::Error::Unsupported("cookies"))
+    }
     /// Answers a JavaScript dialog. There never is one: always `false`.
     pub fn resolve_dialog(
         &self,

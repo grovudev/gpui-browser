@@ -1,15 +1,11 @@
 //! Backend selection. `init` / `Runtime` / `Webview` are swapped per platform.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[path = "cef/mod.rs"]
 mod imp;
 
-#[cfg(target_os = "windows")]
-#[path = "wry/mod.rs"]
-mod imp;
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{init, Runtime, Webview};
+pub use imp::{Runtime, Webview, init};

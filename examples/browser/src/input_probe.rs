@@ -92,7 +92,7 @@ pub fn run(report: PathBuf) {
     })
     .unwrap();
     let cef = runtime.clone();
-    gpui_platform::application().run(move |cx| {
+    gpui::application().run(move |cx| {
         let app: *mut AnyObject =
             unsafe { msg_send![AnyClass::get(c"NSApplication").unwrap(), sharedApplication] };
         let _: Bool = unsafe { msg_send![app, setActivationPolicy: 2isize] };

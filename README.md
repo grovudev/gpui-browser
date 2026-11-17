@@ -1,29 +1,26 @@
 # gpui-cef
 
-[![CI](https://github.com/bokuweb/gpui-cef/actions/workflows/ci.yml/badge.svg)](https://github.com/bokuweb/gpui-cef/actions/workflows/ci.yml)
+[![CI](https://github.com/grovudev/gpui-cef/actions/workflows/ci.yml/badge.svg)](https://github.com/grovudev/gpui-cef/actions/workflows/ci.yml)
 
 Embed a real browser engine into [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui).
 
 | OS | Engine | How it is composited |
 |---|---|---|
-| macOS | **Chromium (CEF 151)** | Rendered off-screen and drawn as an ordinary gpui element, so it is clipped and layered like anything else |
-| Windows | **WebView2 (wry)** | A native child window kept aligned with the laid-out rect; always in front of gpui's own drawing |
+| macOS | **Chromium (CEF 156)** | Rendered off-screen and drawn as an ordinary gpui element |
+| Windows | **Chromium (CEF 156)** | Rendered off-screen and drawn as an ordinary gpui element |
+| Linux | **Chromium (CEF 156)** | Rendered off-screen and drawn as an ordinary gpui element |
 
-## Why Chromium on macOS
+CEF's matching binary distribution is downloaded automatically during the first
+build by `cef-dll-sys`. `CEF_PATH` can optionally point to an existing CEF
+distribution. Run `cargo run -p xtask` to assemble a runnable bundle in
+`target/bundle` with the CEF runtime files included.
 
-Using wry — as in [this post about gpui-webview](https://voluntas.ghost.io/gpui-webview/) —
-attaches a `WKWebView` as a **child view of the gpui window**. That is easy, but it means:
+Launch the generated bundle with `open target/bundle/gpui-cef-browser.app` on
+macOS, `target/bundle/run.sh` on Linux, or
+`target/bundle/gpui-cef-browser.exe` on Windows.
 
-- nothing can be drawn on top of the webview
-- rounded corners and masks do not clip it
-- it is not part of gpui's scene, so it does not stay in sync with animation or scrolling
-
-CEF supports off-screen rendering, which turns the page into just another gpui
-element. The demo layers a gpui badge over the webview to show this.
-
-WebView2 exposes no public off-screen API, so the Windows backend uses the
-straightforward child-window approach — meaning **those limitations remain on
-Windows**. The API is the same; the compositing behaviour is not.
+Off-screen rendering turns the page into an ordinary gpui element, so it is
+clipped and layered with the rest of the interface on all three platforms.
 
 ## Usage
 
@@ -37,8 +34,8 @@ fn main() {
     // Hand the closure a *clone*. Moving the value itself in would run
     // cef_shutdown() the moment the closure returns, taking the process with it.
     let cef = runtime.clone();
-    gpui_platform::application().run(move |cx| {
-        // 2. gpui has created NSApp by now, so initialize CEF here.
+    gpui::application().run(move |cx| {
+        // 2. Initialize CEF from inside gpui's application closure.
         cef.start(cx).unwrap();
 
         cx.open_window(Default::default(), |window, cx| {
@@ -57,34 +54,27 @@ with anything else.
 
 ### API
 
-| | macOS (CEF) | Windows (WebView2) |
+| API | CEF on macOS, Windows, and Linux |
 |---|---|---|
-| `load_url` / `reload` / `go_back` / `go_forward` / `stop` | yes | yes |
-| `eval` (run JavaScript) | yes | yes |
-| `url` | yes | yes |
-| `title` | yes | no — always empty |
-| `is_loading` | yes | approximated from page load events |
-| `can_go_back` / `can_go_forward` | yes | no — always `true` |
-| `WebviewEvent::Message` (page to app, via `post_message_script`) | yes | yes |
-| `Runtime::set_cookies` | yes | no — `Error::Unsupported` |
-| Popups: `WebviewOptions::popups`, `WebviewEvent::PopupRequested` | yes | yes — `target_frame` is always empty and `user_gesture` always `false` |
-| `WebviewOptions::navigation_filter`, `WebviewEvent::NavigationBlocked` | yes, for the page and its frames | the page only; `is_redirect` and `user_gesture` are always `false` |
-| JavaScript dialogs: `WebviewEvent::JsDialog`, `resolve_dialog`, `WebviewOptions::js_dialogs` | yes | no — WebView2 shows its own |
-| File choosers: `WebviewEvent::FileDialog`, `resolve_file_dialog` | yes, except folders (see below) | no — WebView2 shows its own |
-| Downloads: `WebviewEvent::DownloadRequested`, `resolve_download` | yes; the download waits for the answer | a notice only: WebView2 has already saved it to its default folder, and `resolve_download` does nothing |
-| `WebviewEvent::DownloadUpdated` | progress, completion, cancellation, failure | completion and failure only |
-| `WebviewEvent::RenderProcessTerminated` | yes | no |
-| `WebviewEvent::LoadFailed` | yes | no |
-| `print_to_pdf`, `WebviewEvent::PdfPrinted` | yes | no — `Error::Unsupported` |
+| `load_url` / `reload` / `go_back` / `go_forward` / `stop` | yes |
+| `eval` (run JavaScript), `url`, `title`, `is_loading` | yes |
+| `can_go_back` / `can_go_forward` | yes |
+| `WebviewEvent::Message` (page to app, via `post_message_script`) | yes |
+| `Runtime::set_cookies` | yes |
+| Popups: `WebviewOptions::popups`, `WebviewEvent::PopupRequested` | yes |
+| Navigation filtering and `WebviewEvent::NavigationBlocked` | yes, for the page and its frames |
+| JavaScript dialogs, file choosers, and downloads | yes |
+| `WebviewEvent::DownloadUpdated` | progress, completion, cancellation, failure |
+| `WebviewEvent::RenderProcessTerminated` / `LoadFailed` | yes |
+| `print_to_pdf`, `WebviewEvent::PdfPrinted` | yes |
 
 A page talks back to the application through its console: the script
 `post_message_script(expr)` returns logs `expr` with a prefix, and the webview
 emits it as `WebviewEvent::Message`. Anything in the page can do this, so treat
 a message as input from the page.
 
-`gpui` comes from Zed's repository, as it does for gpui-component: the
-application's lockfile picks the revision, so the app and this crate link one
-`gpui`. This repository's own lockfile pins the revision CI builds against.
+`gpui` is provided by `gpui-kit`, allowing this crate to use the same GPUI
+facade as applications built with gpui-component.
 
 ### When the page needs the application
 
@@ -338,35 +328,23 @@ were verified.
 
 | | Why | How |
 |---|---|---|
-| cmake / ninja | building `libcef_dll_wrapper` | `brew install cmake ninja` |
-| CEF binaries (~500MB) | downloaded into `$CEF_PATH` by `cef-dll-sys` on the first build | automatic |
+| C++ compiler, cmake, ninja | building `libcef_dll_wrapper` | install with your OS package manager |
+| CEF binaries (~500MB) | required by the CEF wrapper and runtime | downloaded automatically on the first build |
 
-**Xcode.app is not required.** gpui compiles its shaders with `xcrun metal` at
-build time by default, and that tool does not ship with the Command Line Tools.
-This repository enables gpui's `runtime_shaders` feature, which hands the shader
-source to Metal at runtime instead.
-
-`just doctor` checks all of this.
+Set `CEF_PATH` to use an existing CEF distribution instead of the automatic
+download. On macOS, **Xcode.app is not required**: this workspace enables
+gpui's `runtime_shaders` feature and compiles shaders at runtime.
 
 ### Commands
 
 ```bash
 just doctor   # check the prerequisites
-just bundle   # build the .app bundle
+just bundle   # build the platform bundle
 just run      # bundle and launch
 ```
 
-On macOS you **must go through the bundle**. CEF locates
-`Contents/Frameworks/Chromium Embedded Framework.framework` and
-`Contents/Frameworks/<name> Helper.app` through the bundle layout, so a bare
-executable from `cargo run` cannot start.
-
-### Environment-specific gotcha
-
-If building `libcef_dll_wrapper` fails with `fatal error: 'atomic' file not found`,
-a stale libc++ in `/Library/Developer/CommandLineTools/usr/include/c++/v1` is
-shadowing the complete one in the SDK. The `justfile` works around it through
-`CXXFLAGS`, but the real fix is reinstalling the Command Line Tools.
+The bundle contains the CEF runtime and platform resources. macOS requires the
+`.app` layout; Linux gets a `run.sh` launcher that sets the library search path.
 
 ## Implementation notes (the mines that were stepped on)
 
@@ -400,30 +378,28 @@ Calling `do_message_loop_work()` while gpui's `App` is borrowed lets gpui's pain
 callbacks re-enter from the run loop Chromium spins, which panics with
 `RefCell already borrowed`.
 
-On top of that, gpui's foreground executor barely runs tasks while the app is idle
+On macOS, gpui's foreground executor barely runs tasks while the app is idle
 — measured at one tick every one to five seconds. Putting the pump there deadlocks
 the whole thing: the pump does not run, so CEF produces no frames, so gpui does not
 repaint, so the executor does not run.
 
-Fix: bypass gpui and install a `CFRunLoopTimer` on the main run loop at 60Hz
-(`platform/cef/pump.rs`). The callback comes straight from the run loop, so nobody
-is borrowing gpui's `App`. CEF's `on_schedule_message_pump_work` callback
+Fix: macOS bypasses gpui and installs a `CFRunLoopTimer` on the main run loop at
+60Hz (`platform/cef/pump.rs`). The callback comes straight from the run loop, so
+nobody is borrowing gpui's `App`. CEF's `on_schedule_message_pump_work` callback
 signals a thread-safe run-loop source that brings this timer forward for pending
-work. Only the timer calls CEF, with recursive ticks deferred until it returns.
-The 60Hz fallback remains active without scheduling requests, and accelerated
-begin-frame requests retain their own 60Hz limit.
+work. Linux and Windows use a 16ms GPUI task to pump CEF on the UI thread.
+Accelerated begin-frame requests are macOS-only.
 
-`just input-e2e` also reports 100 host/renderer IPC round trips, after 10 warmups.
-See [message-pump measurements](docs/message-pump-performance.md) for the method
-and baseline. This measures neither physical typing nor document/display latency.
+`just input-e2e` also reports 100 host/renderer IPC round trips on macOS, after
+10 warmups. See [message-pump measurements](docs/message-pump-performance.md)
+for the method and baseline. This measures neither physical typing nor
+document/display latency.
 
 ### The child process sandbox
 
-`cef-dll-sys` is built with `USE_SANDBOX=ON` by default. Without a
-`cef_sandbox_initialize` call in the helper, the GPU and network child processes
-die instantly with `exit_code=5`, and then nothing loads and nothing paints. The
-only symptom is a "GPU process exited unexpectedly" line, which makes it easy to
-miss.
+The macOS helper initializes the CEF sandbox before launching renderer, GPU, and
+network child processes. Linux and Windows use the browser executable itself for
+CEF subprocesses.
 
 ### Runtime lifetime
 
@@ -437,40 +413,35 @@ Fix: make `Runtime` an `Rc`-backed shared handle and pass the closure a clone.
 
 ```
 crates/gpui-cef/
-  src/platform/cef/     macOS: draw CEF's off-screen output as a gpui element
+  src/platform/cef/     CEF off-screen rendering on macOS, Windows, and Linux
     mod.rs              init / Runtime / Webview / Element
     handlers.rs         CEF-side callbacks: rendering, display, loading, popups,
                         navigation, dialogs, file choosers, downloads, crashes
     pending.rs          requests waiting on the application's answer
     input.rs            gpui input events to CEF events
-    nsapp.rs            retrofit CefAppProtocol onto NSApp
-    pump.rs             drive CEF from a CFRunLoopTimer
+    nsapp.rs            retrofit CefAppProtocol onto NSApp (macOS)
+    pump.rs             drive CEF from a CFRunLoopTimer (macOS)
+    pump_non_macos.rs   pump CEF from a GPUI task (Linux and Windows)
     shared.rs           state shared between CEF and gpui
-  src/platform/wry/     Windows: keep a WebView2 child window on the layout rect
 examples/browser/       demo app (main binary plus the CEF child-process helper),
                         its feature test page, and the end-to-end check
-xtask/                  assembles the .app bundle
+xtask/                  downloads are handled by cef-dll-sys; assembles platform bundles
 ```
 
 ## Not verified
 
-- **The Windows backend has never been run.** CI compiles and lints it on
-  Windows, but nobody has watched it draw anything — popups, the navigation
-  filter and downloads through wry included.
+- **Windows and macOS CEF builds.** CI covers both targets, but they cannot be
+  built or launched from this Linux development environment.
+- **Live Linux rendering and input** through the new CEF pump.
 - **The demo's native answers.** `just e2e` answers automatically; that the
   gpui prompt, the open and save panels and the `prompt()` overlay come up has
   been seen in the window list, but clicking them has been left to a human.
-- **Typing.** The input-method wiring is unit tested for its offset arithmetic
-  only. Synthesizing real key events needs macOS Accessibility permission, which
-  the development machine does not have, so the round trip from keyboard to page
-  has to be confirmed by hand.
+- **Typing and IME.** Input translation is unit tested, but physical key events,
+  CJK input, and platform-specific IME behavior need live verification.
 - Scrolling direction and step size through CEF.
 - More than one webview at a time. The message pump is shared across them by
   design, but only the single-webview case has been exercised.
-- How it looks. The development machine had no screen recording permission, so no
-  screenshot could capture the window. That the page renders at exactly the
-  element's rect was confirmed over CDP instead (994x786 inside a 1280x860
-  window, matching the layout to the pixel).
+- Screenshot-based visual verification of the demo.
 
 ## License
 

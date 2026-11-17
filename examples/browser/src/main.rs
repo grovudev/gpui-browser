@@ -2,8 +2,7 @@
 //!
 //! The point of it is that the webview behaves like any other gpui element:
 //!
-//! - **It is clipped by rounded corners.** Attaching a child view (wry's
-//!   `WKWebView`, for instance) only ever gives you a rectangle.
+//! - **It is clipped by rounded corners.** The page is part of gpui's scene.
 //! - **gpui elements are drawn on top of it.** The badge in the bottom right
 //!   sits in front of the page.
 //! - **It shares the layout tree.** Toggling the side panel changes the
@@ -1084,9 +1083,9 @@ fn main() {
     // Hand the closure a clone. Moving the value in would run cef_shutdown() the
     // moment the closure returns, taking the process with it.
     let cef = runtime.clone();
-    gpui_platform::application().run(move |cx| {
-        // 2. gpui has created NSApp by now, so initialize CEF here. The other
-        //    order lets CEF claim the NSApplication singleton and gpui crashes.
+    gpui::application().run(move |cx| {
+        // 2. Initialize CEF inside GPUI's application closure. On macOS, GPUI
+        //    must create NSApp first.
         if let Err(err) = cef.start(cx) {
             eprintln!("failed to initialize the browser runtime: {err}");
             std::process::exit(1);

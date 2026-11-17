@@ -2,7 +2,7 @@
 #[derive(Clone, Debug)]
 pub struct RuntimeOptions {
     /// `--remote-debugging-port`. When set, Chrome DevTools can attach at
-    /// `http://127.0.0.1:<port>`. macOS (CEF) only.
+    /// `http://127.0.0.1:<port>`.
     pub remote_debugging_port: Option<u16>,
     /// Where CEF keeps its cache. `None` means in-memory / throwaway.
     pub cache_path: Option<std::path::PathBuf>,
@@ -32,7 +32,7 @@ pub struct WebviewOptions {
     pub url: String,
     /// Make the page background transparent, so gpui shows through.
     pub transparent: bool,
-    /// Upper bound on the off-screen frame rate. macOS (CEF) only.
+    /// Upper bound on the off-screen frame rate.
     pub frame_rate: i32,
     /// Receive frames through a shared GPU texture (IOSurface). macOS (CEF) only.
     ///
@@ -59,15 +59,19 @@ pub struct WebviewOptions {
     pub navigation_filter: Option<NavigationFilter>,
     /// What to do with `alert`, `confirm`, `prompt` and "leave this page?"
     /// dialogs. By default each one becomes a [`crate::WebviewEvent::JsDialog`]
-    /// for the application to answer. macOS (CEF) only: WebView2 shows its own.
+    /// for the application to answer.
     pub js_dialogs: DialogPolicy,
     /// Decide whether an origin may use the asynchronous Clipboard API.
-    /// Denied by default. macOS (CEF) only.
+    /// Denied by default.
     ///
     /// Approving an origin allows reading its system clipboard; only approve
     /// trusted application content. Chromium may remember the decision for
     /// the lifetime of the browser context. Native Cmd+C/X/V do not need this.
     pub clipboard_access: Option<ClipboardAccessFilter>,
+    /// JavaScript to run for each main-frame navigation before page scripts.
+    pub document_start_script: Option<String>,
+    /// Override the `User-Agent` header for every request in this webview.
+    pub user_agent: Option<String>,
 }
 
 impl Default for WebviewOptions {
@@ -81,6 +85,8 @@ impl Default for WebviewOptions {
             navigation_filter: None,
             js_dialogs: DialogPolicy::default(),
             clipboard_access: None,
+            document_start_script: None,
+            user_agent: None,
         }
     }
 }
@@ -105,6 +111,11 @@ impl std::fmt::Debug for WebviewOptions {
                 "clipboard_access",
                 &self.clipboard_access.as_ref().map(|_| "Fn(&str) -> bool"),
             )
+            .field(
+                "document_start_script",
+                &self.document_start_script.as_ref().map(|_| "<script>"),
+            )
+            .field("user_agent", &self.user_agent)
             .finish()
     }
 }
@@ -197,19 +208,20 @@ pub struct NavigationRequest {
     /// Where it is going.
     pub url: String,
     /// Whether this is a server redirect of a navigation already under way.
-    /// Always `false` with WebView2.
     pub is_redirect: bool,
     /// Whether the user started it — clicked a link, say — rather than the
-    /// page or the application. Always `false` with WebView2.
+    /// page or the application.
     pub user_gesture: bool,
     /// Whether it is the page itself rather than an `<iframe>` inside it.
-    /// Always `true` with WebView2, which only asks about the page.
     pub is_main_frame: bool,
 }
 
 /// Asks `filter` about `request`, treating a panic as a refusal: it would
 /// otherwise unwind into the browser engine and abort the process.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+    allow(dead_code)
+)]
 pub(crate) fn navigation_allowed(filter: &NavigationFilter, request: &NavigationRequest) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter(request))).unwrap_or_else(
         |_| {

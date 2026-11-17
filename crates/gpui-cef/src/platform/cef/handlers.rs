@@ -7,9 +7,11 @@
 use std::rc::Rc;
 
 use cef::{rc::Rc as _, *};
+#[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
-use gpui::{px, size, Bounds, CursorStyle, RenderImage};
+use gpui::{Bounds, CursorStyle, RenderImage, px, size};
 
 use super::shared::{FileDialogReply, Frame as SharedFrame, JsDialogReply, Shared};
 use crate::{
@@ -47,6 +49,8 @@ wrap_app! {
             command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
             // Avoids the macOS Keychain prompt. Only meaningful in development.
             command_line.append_switch(Some(&"use-mock-keychain".into()));
+            #[cfg(target_os = "linux")]
+            command_line.append_switch(Some(&"disable-gpu".into()));
 
             // An escape hatch for when the child processes will not start. Not
             // for everyday use: turning the sandbox off removes Chromium's
@@ -164,6 +168,7 @@ wrap_render_handler! {
 
         /// The GPU path: take the shared IOSurface CEF drew into and wrap it in a
         /// `CVPixelBuffer`, ready for gpui's `surface()`. No pixels are copied.
+        #[cfg(target_os = "macos")]
         fn on_accelerated_paint(
             &self,
             _browser: Option<&mut Browser>,
@@ -295,6 +300,7 @@ wrap_display_handler! {
 
         /// Off-screen rendering means CEF never touches the real cursor, so the
         /// page's choice is forwarded to gpui instead.
+        #[cfg(target_os = "macos")]
         fn on_cursor_change(
             &self,
             _browser: Option<&mut Browser>,
@@ -304,6 +310,18 @@ wrap_display_handler! {
         ) -> ::std::os::raw::c_int {
             self.state.shared.set_cursor(cursor_style(type_));
             // Returning 1 tells CEF the cursor has been dealt with.
+            1
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        fn on_cursor_change(
+            &self,
+            _browser: Option<&mut Browser>,
+            _cursor: CursorHandle,
+            type_: CursorType,
+            _custom_cursor_info: Option<&CursorInfo>,
+        ) -> ::std::os::raw::c_int {
+            self.state.shared.set_cursor(cursor_style(type_));
             1
         }
     }
@@ -359,6 +377,43 @@ wrap_load_handler! {
     }
 
     impl LoadHandler {
+        fn on_load_start(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut cef::Frame>,
+            _transition_type: TransitionType,
+        ) {
+            let Some(frame) = frame.filter(|frame| frame.is_main() != 0) else {
+                return;
+            };
+            let frame_url = frame.url();
+            let url = CefStringUtf16::from(&frame_url).to_string();
+            self.state.shared.set_url(url.clone());
+            self.state
+                .shared
+                .push_event(WebviewEvent::PageStarted(url));
+            if let Some(script) = self.state.shared.document_start_script() {
+                frame.execute_java_script(Some(&script.as_str().into()), None, 0);
+            }
+        }
+
+        fn on_load_end(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut cef::Frame>,
+            _http_status_code: ::std::os::raw::c_int,
+        ) {
+            let Some(frame) = frame.filter(|frame| frame.is_main() != 0) else {
+                return;
+            };
+            let frame_url = frame.url();
+            self.state
+                .shared
+                .push_event(WebviewEvent::PageFinished(
+                    CefStringUtf16::from(&frame_url).to_string(),
+                ));
+        }
+
         fn on_loading_state_change(
             &self,
             _browser: Option<&mut Browser>,
@@ -479,6 +534,21 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        fn resource_request_handler(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut cef::Frame>,
+            _request: Option<&mut Request>,
+            _is_navigation: ::std::os::raw::c_int,
+            _is_download: ::std::os::raw::c_int,
+            _request_initiator: Option<&CefString>,
+            _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
+        ) -> Option<ResourceRequestHandler> {
+            Some(GpuiCefResourceRequestHandler::new(
+                self.state.shared.clone(),
+            ))
+        }
+
         /// Every navigation, of the page and of its frames, passes through
         /// [`crate::WebviewOptions::navigation_filter`] here.
         fn on_before_browse(
@@ -556,6 +626,32 @@ wrap_request_handler! {
                     1
                 }
             }
+        }
+    }
+}
+
+wrap_resource_request_handler! {
+    pub(crate) struct GpuiCefResourceRequestHandler {
+        shared: Rc<Shared>,
+    }
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut cef::Frame>,
+            request: Option<&mut Request>,
+            _callback: Option<&mut Callback>,
+        ) -> ReturnValue {
+            let Some(user_agent) = self.shared.user_agent() else {
+                return ReturnValue::CONTINUE;
+            };
+            if let Some(request) = request {
+                let name = CefString::from("User-Agent");
+                let value = CefString::from(user_agent.as_str());
+                request.set_header_by_name(Some(&name), Some(&value), 1);
+            }
+            ReturnValue::CONTINUE
         }
     }
 }
@@ -934,34 +1030,56 @@ wrap_keyboard_handler! {
     pub(crate) struct GpuiCefKeyboardHandler {}
 
     impl KeyboardHandler {
+        #[cfg(target_os = "macos")]
         fn on_key_event(
             &self,
             browser: Option<&mut Browser>,
             event: Option<&KeyEvent>,
             _os_event: *mut u8,
         ) -> i32 {
-            use super::input::{clipboard_command, ClipboardCommand};
+            handle_key_event(browser, event)
+        }
 
-            let Some(event) = event else {
-                return 0;
-            };
-            if let Some(command) = clipboard_command(event) {
-                if let Some(frame) = browser.and_then(|browser| browser.focused_frame()) {
-                    match command {
-                        ClipboardCommand::Copy => frame.copy(),
-                        ClipboardCommand::Cut => frame.cut(),
-                        ClipboardCommand::Paste => frame.paste(),
-                    }
-                }
-            }
-            // OnKeyEvent runs after the renderer and JavaScript have had their
-            // chance. GPUI already owns AppKit's initial key/menu dispatch;
-            // returning false here sends even ordinary typing back through
-            // NSMenu.performKeyEquivalent, including menu validation/actions.
-            // Consume only this final native fallback, not the page's input.
-            1
+        #[cfg(target_os = "linux")]
+        fn on_key_event(
+            &self,
+            browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: Option<&mut cef::sys::XEvent>,
+        ) -> i32 {
+            handle_key_event(browser, event)
+        }
+
+        #[cfg(target_os = "windows")]
+        fn on_key_event(
+            &self,
+            browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: Option<&mut cef::sys::MSG>,
+        ) -> i32 {
+            handle_key_event(browser, event)
         }
     }
+}
+
+fn handle_key_event(browser: Option<&mut Browser>, event: Option<&KeyEvent>) -> i32 {
+    use super::input::{ClipboardCommand, clipboard_command};
+
+    let Some(event) = event else {
+        return 0;
+    };
+    if let Some(command) = clipboard_command(event) {
+        if let Some(frame) = browser.and_then(|browser| browser.focused_frame()) {
+            match command {
+                ClipboardCommand::Copy => frame.copy(),
+                ClipboardCommand::Cut => frame.cut(),
+                ClipboardCommand::Paste => frame.paste(),
+            }
+        }
+    }
+    // CEF has already let the renderer process the key. Consume the final
+    // native fallback because a windowless browser has no native view.
+    1
 }
 
 // Return None for unrelated permissions so their existing CEF behavior remains
@@ -1108,10 +1226,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renderer_keyboard_fallback_does_not_reenter_the_native_menu() {
+    fn renderer_keyboard_fallback_consumes_the_event() {
         let handler = GpuiCefKeyboardHandler::new();
-        // CEF invokes this callback after the renderer. Returning false here
-        // invokes NSMenu.performKeyEquivalent again, even for plain typing.
         for key in [
             0x41, 0x31, 0x08, 0x09, 0x0D, 0x1B, 0x25, 0x43, 0x58, 0x56, 0x53,
         ] {
@@ -1132,10 +1248,14 @@ mod tests {
                         windows_key_code: key,
                         ..Default::default()
                     };
+                    #[cfg(target_os = "macos")]
+                    let os_event = std::ptr::null_mut();
+                    #[cfg(not(target_os = "macos"))]
+                    let os_event = None;
                     assert_eq!(
-                        handler.on_key_event(None, Some(&event), std::ptr::null_mut()),
+                        handler.on_key_event(None, Some(&event), os_event),
                         1,
-                        "CEF must not replay {type_:?}, key {key}, flags {modifiers} to AppKit"
+                        "CEF must consume {type_:?}, key {key}, flags {modifiers}"
                     );
                 }
             }
@@ -1150,11 +1270,19 @@ mod tests {
             windows_key_code: 0x41,
             ..Default::default()
         };
+        #[cfg(target_os = "macos")]
+        let pre_os_event = std::ptr::null_mut();
+        #[cfg(not(target_os = "macos"))]
+        let pre_os_event = None;
+        #[cfg(target_os = "macos")]
+        let key_os_event = std::ptr::null_mut();
+        #[cfg(not(target_os = "macos"))]
+        let key_os_event = None;
         assert_eq!(
-            handler.on_pre_key_event(None, Some(&event), std::ptr::null_mut(), None),
+            handler.on_pre_key_event(None, Some(&event), pre_os_event, None),
             0
         );
-        assert_eq!(handler.on_key_event(None, None, std::ptr::null_mut()), 0);
+        assert_eq!(handler.on_key_event(None, None, key_os_event), 0);
     }
 
     #[test]

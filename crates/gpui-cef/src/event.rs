@@ -11,6 +11,12 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WebviewEvent {
+    /// The main frame began navigating to this URL.
+    PageStarted(String),
+
+    /// The main frame finished loading this URL.
+    PageFinished(String),
+
     /// A message the page posted with the script
     /// [`post_message_script`](crate::post_message_script) returns.
     ///
@@ -28,11 +34,10 @@ pub enum WebviewEvent {
         /// `window.open()`.
         url: String,
         /// The window name the page gave, as in `window.open(url, "name")` or
-        /// `target="name"`. Empty for `_blank` or no name, and always empty
-        /// with WebView2.
+        /// `target="name"`. Empty for `_blank` or no name.
         target_frame: String,
         /// Whether the user asked for it — clicked a link, say — rather than
-        /// the page opening it on its own. Always `false` with WebView2.
+        /// the page opening it on its own.
         user_gesture: bool,
     },
 
@@ -50,7 +55,7 @@ pub enum WebviewEvent {
     /// [`Webview::resolve_dialog`](crate::Webview::resolve_dialog).
     ///
     /// Until then the page's script is blocked; see
-    /// [`DialogPolicy`](crate::DialogPolicy). macOS (CEF) only.
+    /// [`DialogPolicy`](crate::DialogPolicy).
     #[non_exhaustive]
     JsDialog {
         /// What to answer by.
@@ -71,7 +76,6 @@ pub enum WebviewEvent {
     /// it called `showOpenFilePicker()` and the like. Show a picker, then pass
     /// the choice to
     /// [`Webview::resolve_file_dialog`](crate::Webview::resolve_file_dialog).
-    /// macOS (CEF) only: WebView2 shows its own.
     #[non_exhaustive]
     FileDialog {
         /// What to answer by.
@@ -96,9 +100,6 @@ pub enum WebviewEvent {
     /// it goes with [`Webview::resolve_download`](crate::Webview::resolve_download),
     /// or cancel it; until then it waits. Progress follows as
     /// [`WebviewEvent::DownloadUpdated`].
-    ///
-    /// With WebView2 this is a notice rather than a question: WebView2 has
-    /// already saved it to its default folder, usually the user's Downloads.
     #[non_exhaustive]
     DownloadRequested {
         /// What to answer by. Updates carry the same id.
@@ -107,7 +108,7 @@ pub enum WebviewEvent {
         url: String,
         /// The file name the page or the server suggested.
         suggested_name: String,
-        /// Its MIME type, when known. Always empty with WebView2.
+        /// Its MIME type, when known.
         mime_type: String,
         /// Its size, when known.
         total_bytes: Option<u64>,
@@ -133,7 +134,7 @@ pub enum WebviewEvent {
     /// memory, or was killed. The webview keeps showing the last frame and
     /// stops responding; [`Webview::reload`](crate::Webview::reload) starts a
     /// new process and brings the page back. Any JavaScript dialog it had open
-    /// is dismissed. macOS (CEF) only.
+    /// is dismissed.
     #[non_exhaustive]
     RenderProcessTerminated {
         /// How it ended.
@@ -148,7 +149,7 @@ pub enum WebviewEvent {
     /// A page or frame failed to load: no network, a name that does not
     /// resolve, a refused connection. A load cancelled by another navigation
     /// or by [`WebviewOptions::navigation_filter`] is not a failure and is not
-    /// reported. macOS (CEF) only.
+    /// reported.
     ///
     /// [`WebviewOptions::navigation_filter`]: crate::WebviewOptions::navigation_filter
     #[non_exhaustive]
@@ -248,3 +249,19 @@ pub enum JsDialogKind {
 /// Identifies a [`WebviewEvent::JsDialog`] to answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DialogId(pub(crate) u64);
+
+/// A point-in-time snapshot of the browser state exposed by the active
+/// backend. History availability is `None` when the backend cannot report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebviewState {
+    /// The current main-frame URL.
+    pub url: String,
+    /// The current page title, or an empty string when unavailable.
+    pub title: String,
+    /// Whether the main frame is loading.
+    pub is_loading: bool,
+    /// Whether the webview can navigate back.
+    pub can_go_back: Option<bool>,
+    /// Whether the webview can navigate forward.
+    pub can_go_forward: Option<bool>,
+}

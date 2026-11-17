@@ -16,7 +16,7 @@ use cef::{
     FileDialogCallback, ImplBeforeDownloadCallback, ImplBrowser, ImplDownloadItemCallback,
     ImplFileDialogCallback, ImplJsdialogCallback, JsdialogCallback,
 };
-use gpui::{px, size, Bounds, CursorStyle, Pixels, RenderImage, Size};
+use gpui::{Bounds, CursorStyle, Pixels, RenderImage, Size, px, size};
 
 use super::pending::{Abort, Cancel, Downloads, Pending, Proceed};
 use crate::{DialogId, DownloadId, DownloadState, FileDialogId, WebviewEvent};
@@ -24,6 +24,7 @@ use crate::{DialogId, DownloadId, DownloadState, FileDialogId, WebviewEvent};
 /// The most recent frame handed over by CEF.
 pub(crate) enum Frame {
     /// From `on_accelerated_paint`: a GPU texture referenced in place.
+    #[cfg(target_os = "macos")]
     Accelerated(core_video::pixel_buffer::CVPixelBuffer),
     /// From `on_paint`: BGRA pixels copied on the CPU.
     Cpu(Arc<RenderImage>),
@@ -54,8 +55,14 @@ impl FrameSlot {
         }
     }
 
+    #[cfg(any(target_os = "macos", test))]
     fn take_stale(&self) -> Vec<Arc<RenderImage>> {
         std::mem::take(&mut *self.stale_cpu.borrow_mut())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn append_stale(&self, output: &mut Vec<Arc<RenderImage>>) {
+        output.append(&mut self.stale_cpu.borrow_mut());
     }
 }
 
@@ -82,6 +89,8 @@ pub(crate) struct Shared {
     /// Page title and URL.
     title: RefCell<String>,
     url: RefCell<String>,
+    document_start_script: RefCell<Option<String>>,
+    user_agent: RefCell<Option<String>>,
     /// Whether a page is loading, as reported by CEF's `LoadHandler`.
     is_loading: Cell<bool>,
     /// Whether history navigation is possible.
@@ -91,6 +100,7 @@ pub(crate) struct Shared {
     cursor: Cell<CursorStyle>,
     /// The text the OS IME is currently composing. The page owns the real text;
     /// this mirror exists only so the IME has something coherent to ask about.
+    #[cfg(target_os = "macos")]
     composition: RefCell<String>,
     /// Where CEF says the composition is on screen, in the webview's own
     /// coordinate space. Used to place the candidate window.
@@ -181,10 +191,13 @@ impl Shared {
             resized: Cell::new(false),
             title: RefCell::new(String::new()),
             url: RefCell::new(url),
+            document_start_script: RefCell::new(None),
+            user_agent: RefCell::new(None),
             is_loading: Cell::new(false),
             can_go_back: Cell::new(false),
             can_go_forward: Cell::new(false),
             cursor: Cell::new(CursorStyle::Arrow),
+            #[cfg(target_os = "macos")]
             composition: RefCell::new(String::new()),
             composition_bounds: RefCell::new(Vec::new()),
             received_frame: Cell::new(false),
@@ -368,6 +381,7 @@ impl Shared {
         // One line in the log is enough to tell which path is live.
         if !self.received_frame.replace(true) {
             match &frame {
+                #[cfg(target_os = "macos")]
                 Frame::Accelerated(buffer) => log::info!(
                     "first frame via shared IOSurface: {}x{}",
                     buffer.get_width(),
@@ -431,10 +445,18 @@ impl Shared {
     }
 
     /// Takes the stale frames that gpui should release from its texture cache.
+    #[cfg(any(target_os = "macos", test))]
     pub(crate) fn take_stale_cpu_frames(&self) -> Vec<Arc<RenderImage>> {
         let mut stale = self.view.take_stale();
         stale.extend(self.popup.take_stale());
         stale
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) fn drain_stale_cpu_frames(&self, output: &mut Vec<Arc<RenderImage>>) {
+        output.clear();
+        self.view.append_stale(output);
+        self.popup.append_stale(output);
     }
 
     pub(crate) fn take_dirty(&self) -> bool {
@@ -452,6 +474,22 @@ impl Shared {
 
     pub(crate) fn set_url(&self, url: String) {
         *self.url.borrow_mut() = url;
+    }
+
+    pub(crate) fn document_start_script(&self) -> Option<String> {
+        self.document_start_script.borrow().clone()
+    }
+
+    pub(crate) fn set_document_start_script(&self, script: Option<String>) {
+        *self.document_start_script.borrow_mut() = script;
+    }
+
+    pub(crate) fn user_agent(&self) -> Option<String> {
+        self.user_agent.borrow().clone()
+    }
+
+    pub(crate) fn set_user_agent(&self, user_agent: Option<String>) {
+        *self.user_agent.borrow_mut() = user_agent;
         self.dirty.set(true);
     }
 
@@ -486,12 +524,14 @@ impl Shared {
     }
 
     /// Records the text the IME is composing, or clears it when `text` is empty.
+    #[cfg(target_os = "macos")]
     pub(crate) fn set_composition(&self, text: &str) {
         let mut composition = self.composition.borrow_mut();
         composition.clear();
         composition.push_str(text);
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn composition(&self) -> String {
         self.composition.borrow().clone()
     }
@@ -504,6 +544,7 @@ impl Shared {
     /// The rect covering `range` of the composition, in the webview's own
     /// coordinate space. Falls back to the whole composition when the range is
     /// out of step with what CEF last reported.
+    #[cfg(target_os = "macos")]
     pub(crate) fn composition_bounds(
         &self,
         range: std::ops::Range<usize>,
@@ -525,12 +566,22 @@ impl Shared {
     pub(crate) fn url(&self) -> String {
         self.url.borrow().clone()
     }
+
+    pub(crate) fn state(&self) -> crate::WebviewState {
+        crate::WebviewState {
+            url: self.url(),
+            title: self.title(),
+            is_loading: self.is_loading(),
+            can_go_back: Some(self.can_go_back()),
+            can_go_forward: Some(self.can_go_forward()),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, Bounds};
+    use gpui::{Bounds, point};
     use proptest::prelude::*;
     use std::collections::BTreeSet;
 
@@ -637,6 +688,24 @@ mod tests {
         assert!(shared.can_go_back());
         assert!(!shared.can_go_forward());
         assert!(shared.take_dirty());
+    }
+
+    #[test]
+    fn state_snapshot_reads_the_latest_backend_values() {
+        let shared = Shared::new("https://example.com/".into());
+        shared.set_title("Example".into());
+        shared.set_load_state(true, true, false);
+
+        assert_eq!(
+            shared.state(),
+            crate::WebviewState {
+                url: "https://example.com/".into(),
+                title: "Example".into(),
+                is_loading: true,
+                can_go_back: Some(true),
+                can_go_forward: Some(false),
+            }
+        );
     }
 
     #[test]

@@ -120,6 +120,7 @@ pub(crate) fn key_down_event(keystroke: &gpui::Keystroke) -> KeyEvent {
 /// Return and Tab have a `key_char` in gpui, but AppKit handles them as editing
 /// commands rather than calling `insertText:`. Holding those events would
 /// therefore prevent CEF from ever seeing their physical key press.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn should_wait_for_text_input(keystroke: &gpui::Keystroke) -> bool {
     let modifiers = keystroke.modifiers;
     !modifiers.control
@@ -135,7 +136,12 @@ pub(crate) fn should_wait_for_text_input(keystroke: &gpui::Keystroke) -> bool {
 /// CEF does not derive text from `RAWKEYDOWN` for a windowless browser. GPUI's
 /// input handler calls this only after AppKit has decided the keystroke is text,
 /// so shortcuts never become accidental character input.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn text_events(text: &str) -> Vec<KeyEvent> {
+    text_events_with_modifiers(text, 0)
+}
+
+pub(crate) fn text_events_with_modifiers(text: &str, modifier_flags: u32) -> Vec<KeyEvent> {
     text.encode_utf16()
         .map(|character| {
             // AppKit reports Return as LF, while Chromium's keyboard path uses
@@ -145,7 +151,7 @@ pub(crate) fn text_events(text: &str) -> Vec<KeyEvent> {
             } else {
                 character
             };
-            let mut event = new_key_event(KeyEventType::CHAR, 0);
+            let mut event = new_key_event(KeyEventType::CHAR, modifier_flags);
             event.windows_key_code = character as i32;
             event.character = character;
             event.unmodified_character = character;
@@ -298,9 +304,14 @@ fn native_key_code(key: &str, _windows_key_code: i32) -> i32 {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn native_key_code(_key: &str, windows_key_code: i32) -> i32 {
     windows_key_code
+}
+
+#[cfg(target_os = "linux")]
+fn native_key_code(_key: &str, _windows_key_code: i32) -> i32 {
+    0
 }
 
 /// gpui key name to Windows virtual key code.
@@ -359,7 +370,7 @@ fn windows_key_code(key: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, px, size, Keystroke};
+    use gpui::{Keystroke, point, px, size};
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
         Keystroke {
@@ -596,6 +607,29 @@ mod tests {
         let event = key_down_event(&keystroke("x", Some("x"), Modifiers::default()));
         assert_eq!(event.windows_key_code, 'X' as i32);
         assert_eq!(event.native_key_code, 7);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_uses_virtual_keys_and_preserves_character_modifiers() {
+        let key = keystroke(
+            "a",
+            Some("a"),
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        let key_down = key_down_event(&key);
+        assert_eq!(key_down.windows_key_code, 'A' as i32);
+        assert_eq!(key_down.native_key_code, 0);
+
+        let text = text_events_with_modifiers("A", modifiers(&key.modifiers));
+        assert_eq!(text.len(), 1);
+        assert_eq!(
+            text[0].modifiers & EVENTFLAG_SHIFT_DOWN,
+            EVENTFLAG_SHIFT_DOWN
+        );
     }
 
     #[test]

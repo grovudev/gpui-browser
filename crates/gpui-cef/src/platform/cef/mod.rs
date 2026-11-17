@@ -1,4 +1,4 @@
-//! macOS backend: render Chromium (CEF) off-screen and composite it into gpui.
+//! Cross-platform CEF backend: render Chromium off-screen and composite it into gpui.
 //!
 //! # How it fits together
 //!
@@ -9,21 +9,31 @@
 //! 3. Frames arrive either as a CPU-side BGRA buffer (`OnPaint`, the default) or
 //!    as a shared IOSurface (`OnAcceleratedPaint`, opt-in). Both land in
 //!    [`shared::Shared`], and [`WebviewSurface`] draws whichever is current.
-//! 4. CEF's message loop is driven by a `CFRunLoopTimer` installed on the main
-//!    run loop; see [`pump`] for why it cannot live on gpui's executor.
+//! 4. CEF's message loop is pumped on the platform UI thread; macOS uses a
+//!    `CFRunLoopTimer`, while Linux and Windows use a GPUI task.
 
 mod handlers;
+#[cfg(target_os = "macos")]
 mod ime;
 mod input;
+#[cfg(target_os = "macos")]
 mod nsapp;
 mod pending;
+#[cfg(target_os = "macos")]
+mod pump;
+#[cfg(not(target_os = "macos"))]
+#[path = "pump_non_macos.rs"]
 mod pump;
 mod shared;
 
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 pub(crate) fn input_trace(message: impl std::fmt::Display) {
@@ -32,17 +42,23 @@ pub(crate) fn input_trace(message: impl std::fmt::Display) {
     }
 }
 
+use cef::args::Args;
+#[cfg(target_os = "macos")]
+use cef::library_loader::LibraryLoader;
+use cef::rc::Rc as _;
 use cef::{
-    args::Args, browser_host_create_browser_sync, execute_process, initialize,
-    library_loader::LibraryLoader, Browser, BrowserHost, BrowserSettings, CefString, ImplBrowser,
-    ImplBrowserHost, ImplFrame, Settings, WindowInfo,
+    Browser, BrowserHost, BrowserSettings, CefString, CookieVisitor, ImplBrowser, ImplBrowserHost,
+    ImplCookieManager, ImplCookieVisitor, ImplFrame, ImplRequestContext, Settings, WindowInfo,
+    WrapCookieVisitor, browser_host_create_browser_sync, execute_process, initialize,
 };
+#[cfg(target_os = "macos")]
+use gpui::surface;
 use gpui::{
-    div, point, px, relative, surface, AnyElement, App, Bounds, Context, Element, ElementId,
-    Focusable, GlobalElementId, Hitbox, HitboxBehavior, ImageSource, InspectorElementId,
-    InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, Pixels, Render,
-    ScrollDelta, ScrollWheelEvent, Style, Styled, StyledImage, Window,
+    AnyElement, App, Bounds, Context, Element, ElementId, Focusable, GlobalElementId, Hitbox,
+    HitboxBehavior, ImageSource, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    ParentElement, Pixels, Render, ScrollDelta, ScrollEvent, Style, Styled, StyledImage, Window,
+    div, point, px, relative,
 };
 
 use self::shared::{Frame, Shared};
@@ -50,6 +66,48 @@ use crate::{Error, RuntimeOptions, WebviewOptions};
 
 /// Pixels to scroll per wheel line, used to convert gpui's `ScrollDelta::Lines`.
 const LINE_HEIGHT: f32 = 20.;
+
+struct CookieInfo {
+    name: String,
+    domain: String,
+    path: String,
+    value: String,
+    http_only: bool,
+    secure: bool,
+}
+
+cef::wrap_cookie_visitor! {
+    struct CookieCollector {
+        results: Arc<(Mutex<Vec<CookieInfo>>, AtomicBool)>,
+    }
+
+    impl CookieVisitor {
+        fn visit(
+            &self,
+            cookie: Option<&cef::Cookie>,
+            count: i32,
+            total: i32,
+            _delete_cookie: Option<&mut i32>,
+        ) -> i32 {
+            if let Some(cookie) = cookie {
+                if let Ok(mut results) = self.results.0.lock() {
+                    results.push(CookieInfo {
+                        name: cookie.name.to_string(),
+                        domain: cookie.domain.to_string(),
+                        path: cookie.path.to_string(),
+                        value: cookie.value.to_string(),
+                        http_only: cookie.httponly != 0,
+                        secure: cookie.secure != 0,
+                    });
+                }
+            }
+            if count + 1 >= total {
+                self.results.1.store(true, Ordering::Release);
+            }
+            1
+        }
+    }
+}
 
 /// The process-wide CEF runtime, as a cloneable handle.
 ///
@@ -75,6 +133,7 @@ pub struct Runtime(Rc<RuntimeInner>);
 
 struct RuntimeInner {
     // Handle to the dlopen'd framework. Dropping it takes CEF down with it.
+    #[cfg(target_os = "macos")]
     _loader: LibraryLoader,
     app: RefCell<cef::App>,
     options: RuntimeOptions,
@@ -86,15 +145,16 @@ impl Runtime {
     /// `gpui::Application::run` closure** and before creating the first
     /// [`Webview`].
     ///
-    /// `cx` is unused; it is taken so the signature pins the call site to "after
-    /// gpui has created `NSApp`".
+    /// `cx` is unused; it ensures initialization happens inside the GPUI
+    /// application closure. On macOS, GPUI must create `NSApp` first.
     pub fn start(&self, _cx: &mut App) -> crate::Result<()> {
-        if self.0.started.replace(true) {
+        if self.0.started.get() {
             return Ok(());
         }
 
         // Retrofit CefAppProtocol onto gpui's NSApplication subclass. Without
         // this, a CHECK inside cef_initialize takes the process down.
+        #[cfg(target_os = "macos")]
         if let Err(err) = nsapp::adopt_cef_app_protocol() {
             return Err(Error::Backend(err.to_string()));
         }
@@ -118,6 +178,21 @@ impl Runtime {
             settings.root_cache_path = cache.to_string_lossy().as_ref().into();
             settings.cache_path = cache.to_string_lossy().as_ref().into();
         }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let executable =
+                std::env::current_exe().map_err(|error| Error::LibraryLoad(error.to_string()))?;
+            let executable_dir = executable
+                .parent()
+                .ok_or_else(|| Error::LibraryLoad(executable.display().to_string()))?;
+            settings.browser_subprocess_path = executable.to_string_lossy().as_ref().into();
+            settings.resources_dir_path = executable_dir.to_string_lossy().as_ref().into();
+            settings.locales_dir_path = executable_dir
+                .join("locales")
+                .to_string_lossy()
+                .as_ref()
+                .into();
+        }
 
         let mut app = self.0.app.borrow_mut();
         if initialize(
@@ -130,6 +205,7 @@ impl Runtime {
             return Err(Error::Initialize);
         }
 
+        self.0.started.set(true);
         Ok(())
     }
 
@@ -174,18 +250,20 @@ impl Drop for RuntimeInner {
 }
 
 /// Loads CEF into the process. Call this **at the top of `main`**, before
-/// `gpui_platform::application()`. The actual initialization happens in
+/// `gpui::application()`. The actual initialization happens in
 /// [`Runtime::start`].
 ///
-/// On macOS the executable has to live inside an `.app` bundle that ships
-/// `Frameworks/Chromium Embedded Framework.framework` — the layout `xtask`
-/// produces.
+/// Package the matching CEF runtime with the application using `cargo run -p
+/// xtask`. macOS additionally requires the executable to be inside the `.app`
+/// bundle that `xtask` produces.
 pub fn init(options: RuntimeOptions) -> crate::Result<Runtime> {
     // Checked before anything is loaded: CEF's own loader does not report a
     // missing framework, it stops the process — and an app run with
     // `cargo run`, outside its bundle, should get an error it can carry on
     // without rather than a crash at launch.
+    #[cfg(target_os = "macos")]
     let exe = std::env::current_exe().map_err(|e| Error::LibraryLoad(e.to_string()))?;
+    #[cfg(target_os = "macos")]
     if framework_binary(&exe).is_none() {
         return Err(Error::LibraryLoad(exe.display().to_string()));
     }
@@ -197,7 +275,9 @@ pub fn init(options: RuntimeOptions) -> crate::Result<Runtime> {
         return Err(Error::Backend("gpui_cef::init() called twice".into()));
     }
 
+    #[cfg(target_os = "macos")]
     let loader = LibraryLoader::new(&exe, false);
+    #[cfg(target_os = "macos")]
     if !loader.load() {
         return Err(Error::LibraryLoad(exe.display().to_string()));
     }
@@ -211,8 +291,9 @@ pub fn init(options: RuntimeOptions) -> crate::Result<Runtime> {
         log_to_stderr: options.log_to_stderr,
     });
 
-    // Returns -1 in the browser process, which is what this one is. Child
-    // processes run a separate binary (`*_helper`), so they never get here.
+    // Returns -1 in the browser process. On macOS, subprocesses use the
+    // separately bundled helper; on Linux and Windows this executable handles
+    // its own subprocess invocations.
     let code = execute_process(
         Some(args.as_main_args()),
         Some(&mut app),
@@ -224,6 +305,7 @@ pub fn init(options: RuntimeOptions) -> crate::Result<Runtime> {
     }
 
     Ok(Runtime(Rc::new(RuntimeInner {
+        #[cfg(target_os = "macos")]
         _loader: loader,
         app: RefCell::new(app),
         options,
@@ -243,6 +325,7 @@ pub struct Webview {
     /// Printable keys reach GPUI before AppKit asks the input client what text
     /// they produce. Hold one until `insertText` or `setMarkedText` decides
     /// whether this is ordinary text or IME composition.
+    #[cfg(target_os = "macos")]
     pending_printable_key: Option<gpui::Keystroke>,
     _pump: pump::Registration,
     _focus_subscriptions: [gpui::Subscription; 2],
@@ -252,6 +335,8 @@ impl Webview {
     /// Creates the webview and starts loading the first page.
     pub fn new(window: &mut Window, cx: &mut Context<Self>, options: WebviewOptions) -> Self {
         let shared = Shared::new(options.url.clone());
+        shared.set_document_start_script(options.document_start_script.clone());
+        shared.set_user_agent(options.user_agent.clone());
         // Provisional size until layout runs. CEF refuses to create a browser
         // with a zero-sized view.
         shared.set_layout(
@@ -262,7 +347,7 @@ impl Webview {
             window.scale_factor(),
         );
 
-        let accelerated = options.accelerated;
+        let accelerated = cfg!(target_os = "macos") && options.accelerated;
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             // Receive frames through a shared texture (IOSurface).
@@ -297,12 +382,7 @@ impl Webview {
             None => log::error!("cef_browser_host_create_browser_sync() returned null"),
         }
 
-        let pump = pump::register(
-            shared.clone(),
-            accelerated,
-            cx.entity().downgrade(),
-            cx.to_async(),
-        );
+        let pump = pump::register(shared.clone(), accelerated, cx.entity().downgrade(), cx);
 
         // CEF has to be told when focus moves, or a caret keeps blinking in the
         // page after the user clicks something else in the app.
@@ -322,6 +402,7 @@ impl Webview {
             shared,
             browser,
             focus_handle,
+            #[cfg(target_os = "macos")]
             pending_printable_key: None,
             _pump: pump,
             _focus_subscriptions: focus_subscriptions,
@@ -337,6 +418,12 @@ impl Webview {
     /// Navigates to another URL.
     pub fn load_url(&self, url: &str) {
         if let Some(frame) = self.browser.as_ref().and_then(|b| b.main_frame()) {
+            self.shared.set_url(url.to_owned());
+            self.shared.set_load_state(
+                true,
+                self.shared.can_go_back(),
+                self.shared.can_go_forward(),
+            );
             frame.load_url(Some(&url.into()));
         }
     }
@@ -344,6 +431,7 @@ impl Webview {
     /// Reloads the current page.
     pub fn reload(&self) {
         if let Some(browser) = &self.browser {
+            self.mark_loading();
             browser.reload();
         }
     }
@@ -351,6 +439,7 @@ impl Webview {
     /// Goes back in history.
     pub fn go_back(&self) {
         if let Some(browser) = &self.browser {
+            self.mark_loading();
             browser.go_back();
         }
     }
@@ -358,8 +447,17 @@ impl Webview {
     /// Goes forward in history.
     pub fn go_forward(&self) {
         if let Some(browser) = &self.browser {
+            self.mark_loading();
             browser.go_forward();
         }
+    }
+
+    fn mark_loading(&self) {
+        self.shared.set_load_state(
+            true,
+            self.shared.can_go_back(),
+            self.shared.can_go_forward(),
+        );
     }
 
     /// The current page title.
@@ -375,6 +473,11 @@ impl Webview {
     /// Whether a page is currently loading.
     pub fn is_loading(&self) -> bool {
         self.shared.is_loading()
+    }
+
+    /// Returns a low-cost snapshot of URL, title, loading, and history state.
+    pub fn state(&self) -> crate::WebviewState {
+        self.shared.state()
     }
 
     /// Whether there is history to go back to.
@@ -394,10 +497,132 @@ impl Webview {
         }
     }
 
+    /// Evaluates JavaScript asynchronously and posts its result as an
+    /// untrusted [`crate::WebviewEvent::Message`].
+    pub fn eval_async(&self, request_id: u64, token: &str, source: &str) -> crate::Result<()> {
+        let script = crate::eval_async_script(request_id, token, source)
+            .map_err(|error| crate::Error::Backend(error.to_string()))?;
+        self.eval(&script);
+        Ok(())
+    }
+
+    /// Sets the script run at the beginning of each main-frame navigation.
+    pub fn set_document_start_script(&self, script: Option<String>) {
+        self.shared.set_document_start_script(script);
+    }
+
+    /// Changes the `User-Agent` header used for subsequent requests.
+    pub fn set_user_agent(&self, user_agent: Option<String>) {
+        self.shared.set_user_agent(user_agent);
+    }
+
+    /// Hides or shows the browser's rendering surface without destroying it.
+    pub fn set_visible(&self, visible: bool) {
+        if let Some(host) = self.host() {
+            host.was_hidden((!visible) as i32);
+        }
+    }
+
+    /// Opens the browser's developer tools in a CEF-managed window.
+    pub fn show_devtools(&self) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        if host.has_dev_tools() != 0 {
+            host.close_dev_tools();
+        } else {
+            host.show_dev_tools(
+                Some(&WindowInfo::default()),
+                None,
+                Some(&BrowserSettings::default()),
+                None,
+            );
+        }
+    }
+
+    /// Returns cookies visible to this browser, optionally restricted to a URL.
+    ///
+    /// Cookie enumeration is asynchronous in CEF; this method pumps the CEF
+    /// loop for up to 750 ms while waiting for the visitor callback.
+    pub fn get_cookies_json(
+        &self,
+        url: Option<&str>,
+        include_values: bool,
+    ) -> crate::Result<String> {
+        let context = self
+            .browser
+            .as_ref()
+            .and_then(|browser| browser.host())
+            .and_then(|host| host.request_context())
+            .ok_or_else(|| crate::Error::Backend("CEF request context is unavailable".into()))?;
+        let manager = context
+            .cookie_manager(None)
+            .ok_or_else(|| crate::Error::Backend("CEF cookie manager is unavailable".into()))?;
+        let results = Arc::new((Mutex::new(Vec::new()), AtomicBool::new(false)));
+        let mut visitor = CookieCollector::new(Arc::clone(&results));
+        let started = if let Some(url) = url {
+            let url = CefString::from(url);
+            manager.visit_url_cookies(Some(&url), 1, Some(&mut visitor))
+        } else {
+            manager.visit_all_cookies(Some(&mut visitor))
+        };
+        if started == 0 {
+            return Err(crate::Error::Backend(
+                "CEF could not enumerate cookies".into(),
+            ));
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(750);
+        while !results.1.load(Ordering::Acquire) && Instant::now() < deadline {
+            cef::do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if !results.1.load(Ordering::Acquire) {
+            return Err(crate::Error::Backend(
+                "CEF cookie enumeration timed out".into(),
+            ));
+        }
+        let items: Vec<serde_json::Value> = results
+            .0
+            .lock()
+            .map_err(|_| crate::Error::Backend("CEF cookie result lock was poisoned".into()))?
+            .iter()
+            .map(|cookie| {
+                let mut item = serde_json::json!({
+                    "name": cookie.name,
+                    "domain": cookie.domain,
+                    "path": cookie.path,
+                    "http_only": cookie.http_only,
+                    "secure": cookie.secure,
+                });
+                if include_values {
+                    if let Some(object) = item.as_object_mut() {
+                        object.insert(
+                            "value".into(),
+                            serde_json::Value::String(cookie.value.clone()),
+                        );
+                    }
+                }
+                item
+            })
+            .collect();
+        serde_json::to_string(&serde_json::json!({
+            "count": items.len(),
+            "values_included": include_values,
+            "cookies": items,
+        }))
+        .map_err(|error| crate::Error::Backend(error.to_string()))
+    }
+
     /// Stops the current load.
     pub fn stop(&self) {
         if let Some(browser) = &self.browser {
             browser.stop_load();
+            self.shared.set_load_state(
+                false,
+                self.shared.can_go_back(),
+                self.shared.can_go_forward(),
+            );
         }
     }
 
@@ -496,7 +721,7 @@ impl Webview {
         host.send_mouse_click_event(Some(&cef_event), button, 1, event.click_count as i32);
     }
 
-    fn send_scroll(&self, event: &ScrollWheelEvent) {
+    fn send_scroll(&self, event: &ScrollEvent) {
         let Some(host) = self.host() else { return };
         let flags = input::modifiers(&event.modifiers);
         let cef_event = input::mouse_event(event.position, self.shared.bounds(), flags);
@@ -513,12 +738,28 @@ impl Webview {
             "key down key={:?} char={:?} modifiers={:?}",
             keystroke.key, keystroke.key_char, keystroke.modifiers
         ));
+        #[cfg(target_os = "macos")]
         if input::should_wait_for_text_input(&keystroke) {
             input_trace("printable raw key held for AppKit text decision");
             self.pending_printable_key = Some(keystroke);
         } else if let Some(host) = self.host() {
             input_trace("non-printable raw key sent to CEF");
             host.send_key_event(Some(&input::key_down_event(&keystroke)));
+        }
+        #[cfg(not(target_os = "macos"))]
+        if let Some(host) = self.host() {
+            host.send_key_event(Some(&input::key_down_event(&keystroke)));
+            if let Some(text) = keystroke
+                .key_char
+                .as_deref()
+                .filter(|text| !text.chars().all(char::is_control))
+            {
+                for event in
+                    input::text_events_with_modifiers(text, input::modifiers(&keystroke.modifiers))
+                {
+                    host.send_key_event(Some(&event));
+                }
+            }
         }
     }
 
@@ -536,6 +777,24 @@ impl Drop for Webview {
         self.shared.close();
         if let Some(host) = self.host() {
             host.close_browser(1);
+        }
+
+        let close_deadline = Instant::now() + Duration::from_secs(2);
+        while self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.is_valid() != 0)
+            && Instant::now() < close_deadline
+        {
+            cef::do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.is_valid() != 0)
+        {
+            log::error!("CEF browser did not finish closing before the WebView was dropped");
         }
         self.shared.take_browser();
     }
@@ -579,16 +838,16 @@ impl Render for Webview {
                 MouseButton::Right,
                 cx.listener(|this, event: &MouseUpEvent, _, _| this.send_mouse_up(event)),
             )
-            .on_scroll_wheel(
-                cx.listener(|this, event: &ScrollWheelEvent, _, _| this.send_scroll(event)),
-            )
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, _| this.send_scroll(event)))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.send_key_down(event, window, cx)
             }))
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, _| this.send_key_up(event)))
             .child(WebviewSurface {
                 shared: self.shared.clone(),
+                #[cfg(target_os = "macos")]
                 webview: cx.entity(),
+                #[cfg(target_os = "macos")]
                 focus_handle: self.focus_handle.clone(),
             })
     }
@@ -601,7 +860,9 @@ impl Render for Webview {
 /// - translating window-space mouse positions into view space
 struct WebviewSurface {
     shared: Rc<Shared>,
+    #[cfg(target_os = "macos")]
     webview: gpui::Entity<Webview>,
+    #[cfg(target_os = "macos")]
     focus_handle: gpui::FocusHandle,
 }
 
@@ -639,6 +900,7 @@ impl WebviewSurface {
 /// Draws one CEF layer, whichever way its frame arrived.
 fn frame_element(frame: &Frame) -> AnyElement {
     match frame {
+        #[cfg(target_os = "macos")]
         Frame::Accelerated(buffer) => surface(buffer.clone())
             .object_fit(ObjectFit::Fill)
             .size_full()
@@ -705,7 +967,7 @@ impl Element for WebviewSurface {
         &mut self,
         _global_id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
+        _bounds: Bounds<Pixels>,
         child: &mut Self::RequestLayoutState,
         hitbox: &mut Self::PrepaintState,
         window: &mut Window,
@@ -720,9 +982,10 @@ impl Element for WebviewSurface {
 
         // Registers the page as the window's text input target, which is what
         // lets the OS input method compose into it. See [`ime`].
+        #[cfg(target_os = "macos")]
         window.handle_input(
             &self.focus_handle,
-            gpui::ElementInputHandler::new(bounds, self.webview.clone()),
+            gpui::ElementInputHandler::new(_bounds, self.webview.clone()),
             cx,
         );
     }
@@ -764,6 +1027,7 @@ fn cef_cookie(spec: &crate::CookieSpec) -> cef::Cookie {
 
 /// Where CEF's loader will look for the framework binary, if it is there:
 /// `Contents/Frameworks` beside the executable's `Contents/MacOS`.
+#[cfg(target_os = "macos")]
 fn framework_binary(exe: &std::path::Path) -> Option<std::path::PathBuf> {
     let binary = exe
         .parent()?
@@ -771,7 +1035,7 @@ fn framework_binary(exe: &std::path::Path) -> Option<std::path::PathBuf> {
     binary.exists().then_some(binary)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::framework_binary;
 
