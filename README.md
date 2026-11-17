@@ -449,3 +449,4 @@ Licensed under either the [Apache License, Version 2.0](LICENSE-APACHE) or the
 [MIT license](LICENSE-MIT), at your option, as declared by the workspace's Cargo
 metadata. Dependencies, including the bundled browser engine, retain their own
 licenses.
+# gpui-browser
