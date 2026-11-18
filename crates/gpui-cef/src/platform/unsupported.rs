@@ -4,7 +4,7 @@
 //! Linux should work on the CEF side, so pointing the `#[path]` in [`super`] at
 //! the cef backend would probably be enough. That is untested, hence this stub.
 
-use gpui::{App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, Window, div};
+use gpui::{div, App, Context, FocusHandle, IntoElement, ParentElement, Render, Styled, Window};
 
 use crate::{RuntimeOptions, WebviewOptions};
 

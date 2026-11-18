@@ -30,8 +30,8 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -47,18 +47,18 @@ use cef::args::Args;
 use cef::library_loader::LibraryLoader;
 use cef::rc::Rc as _;
 use cef::{
-    Browser, BrowserHost, BrowserSettings, CefString, CookieVisitor, ImplBrowser, ImplBrowserHost,
-    ImplCookieManager, ImplCookieVisitor, ImplFrame, ImplRequestContext, Settings, WindowInfo,
-    WrapCookieVisitor, browser_host_create_browser_sync, execute_process, initialize,
+    browser_host_create_browser_sync, execute_process, initialize, Browser, BrowserHost,
+    BrowserSettings, CefString, CookieVisitor, ImplBrowser, ImplBrowserHost, ImplCookieManager,
+    ImplCookieVisitor, ImplFrame, ImplRequestContext, Settings, WindowInfo, WrapCookieVisitor,
 };
 #[cfg(target_os = "macos")]
 use gpui::surface;
 use gpui::{
-    AnyElement, App, Bounds, Context, Element, ElementId, Focusable, GlobalElementId, Hitbox,
-    HitboxBehavior, ImageSource, InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollEvent, Style, Styled, StyledImage, Window,
-    div, point, px, relative,
+    div, point, px, relative, AnyElement, App, Bounds, Context, Element, ElementId, Focusable,
+    GlobalElementId, Hitbox, HitboxBehavior, ImageSource, InspectorElementId, InteractiveElement,
+    IntoElement, KeyDownEvent, KeyUpEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, ParentElement, Pixels, Render, ScrollDelta, ScrollEvent, Style,
+    Styled, StyledImage, Window,
 };
 
 use self::shared::{Frame, Shared};
@@ -518,8 +518,10 @@ impl Webview {
 
     /// Hides or shows the browser's rendering surface without destroying it.
     pub fn set_visible(&self, visible: bool) {
-        if let Some(host) = self.host() {
-            host.was_hidden((!visible) as i32);
+        if self.shared.set_visible(visible) {
+            if let Some(host) = self.host() {
+                host.was_hidden((!visible) as i32);
+            }
         }
     }
 

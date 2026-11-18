@@ -370,7 +370,7 @@ fn windows_key_code(key: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Keystroke, point, px, size};
+    use gpui::{point, px, size, Keystroke};
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
         Keystroke {

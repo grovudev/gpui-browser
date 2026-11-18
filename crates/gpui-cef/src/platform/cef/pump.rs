@@ -38,18 +38,17 @@ use std::{
 };
 
 use core_foundation::{
-    base::{TCFType, kCFAllocatorDefault},
+    base::{kCFAllocatorDefault, TCFType},
     date::CFAbsoluteTimeGetCurrent,
     runloop::{
-        CFRunLoop, CFRunLoopAddSource, CFRunLoopGetMain, CFRunLoopSourceContext,
-        CFRunLoopSourceCreate, CFRunLoopSourceRef, CFRunLoopSourceSignal, CFRunLoopTimer,
-        CFRunLoopTimerContext, CFRunLoopTimerSetNextFireDate, CFRunLoopWakeUp,
-        kCFRunLoopCommonModes,
+        kCFRunLoopCommonModes, CFRunLoop, CFRunLoopAddSource, CFRunLoopGetMain,
+        CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceRef, CFRunLoopSourceSignal,
+        CFRunLoopTimer, CFRunLoopTimerContext, CFRunLoopTimerSetNextFireDate, CFRunLoopWakeUp,
     },
 };
 use gpui::{AsyncApp, WeakEntity};
 
-use super::{Webview, shared::Shared};
+use super::{shared::Shared, Webview};
 
 /// How often to drive CEF, in seconds. Roughly 60fps.
 const INTERVAL: f64 = 1. / 60.;

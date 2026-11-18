@@ -89,8 +89,8 @@ pub fn scroll_by(delta_y: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ViewportMode, click_ref, document_start_script, dom_snapshot, network_log, scroll_by,
-        type_ref,
+        click_ref, document_start_script, dom_snapshot, network_log, scroll_by, type_ref,
+        ViewportMode,
     };
 
     #[test]
@@ -119,11 +119,9 @@ mod tests {
             assert!(script.contains("parsed.hash ="));
             assert!(script.contains("[REDACTED]"));
         }
-        assert!(
-            network_log("token", false, false)
-                .unwrap()
-                .contains("url: safeUrl(location.href, 500)")
-        );
+        assert!(network_log("token", false, false)
+            .unwrap()
+            .contains("url: safeUrl(location.href, 500)"));
     }
 
     #[test]

@@ -62,15 +62,15 @@ pub use event::{
     TerminationStatus, WebviewEvent, WebviewState,
 };
 pub use ipc::{
-    AsyncScriptResult, ConsoleEntry, DomElementInfo, DomImageInfo, DomSnapshotPayload, IpcMessage,
-    NetworkEntry, NetworkLogPayload, format_compact_snapshot, format_network_log,
-    generate_ipc_token, origin_from_url, parse_ipc_message,
+    format_compact_snapshot, format_network_log, generate_ipc_token, origin_from_url,
+    parse_ipc_message, AsyncScriptResult, ConsoleEntry, DomElementInfo, DomImageInfo,
+    DomSnapshotPayload, IpcMessage, NetworkEntry, NetworkLogPayload,
 };
 pub use options::{
     ClipboardAccessFilter, CookieSpec, DialogPolicy, NavigationFilter, NavigationRequest,
     PdfMargins, PdfOptions, PopupPolicy, RuntimeOptions, SameSite, WebviewOptions,
 };
-pub use platform::{Runtime, Webview, init};
+pub use platform::{init, Runtime, Webview};
 
 /// What a console line starts with when it is a message for the application.
 /// The page never needs to spell it out: [`post_message_script`] does.

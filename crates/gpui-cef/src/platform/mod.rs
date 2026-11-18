@@ -8,4 +8,4 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{Runtime, Webview, init};
+pub use imp::{init, Runtime, Webview};

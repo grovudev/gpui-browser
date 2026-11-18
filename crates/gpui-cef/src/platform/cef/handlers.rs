@@ -11,7 +11,7 @@ use cef::{rc::Rc as _, *};
 use core_foundation::base::TCFType;
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
-use gpui::{Bounds, CursorStyle, RenderImage, px, size};
+use gpui::{px, size, Bounds, CursorStyle, RenderImage};
 
 use super::shared::{FileDialogReply, Frame as SharedFrame, JsDialogReply, Shared};
 use crate::{
@@ -47,6 +47,12 @@ wrap_app! {
             command_line.append_switch(Some(&"no-startup-window".into()));
             command_line.append_switch(Some(&"noerrdialogs".into()));
             command_line.append_switch(Some(&"hide-crash-restore-bubble".into()));
+            command_line.append_switch(Some(&"no-first-run".into()));
+            command_line.append_switch(Some(&"no-default-browser-check".into()));
+            command_line.append_switch(Some(&"disable-background-networking".into()));
+            command_line.append_switch(Some(&"disable-component-update".into()));
+            command_line.append_switch(Some(&"disable-sync".into()));
+            command_line.append_switch(Some(&"disable-default-apps".into()));
             // Avoids the macOS Keychain prompt. Only meaningful in development.
             command_line.append_switch(Some(&"use-mock-keychain".into()));
             #[cfg(target_os = "linux")]
@@ -544,9 +550,9 @@ wrap_request_handler! {
             _request_initiator: Option<&CefString>,
             _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
         ) -> Option<ResourceRequestHandler> {
-            Some(GpuiCefResourceRequestHandler::new(
-                self.state.shared.clone(),
-            ))
+            self.state.shared.user_agent().map(|_| {
+                GpuiCefResourceRequestHandler::new(self.state.shared.clone())
+            })
         }
 
         /// Every navigation, of the page and of its frames, passes through
@@ -1063,7 +1069,7 @@ wrap_keyboard_handler! {
 }
 
 fn handle_key_event(browser: Option<&mut Browser>, event: Option<&KeyEvent>) -> i32 {
-    use super::input::{ClipboardCommand, clipboard_command};
+    use super::input::{clipboard_command, ClipboardCommand};
 
     let Some(event) = event else {
         return 0;

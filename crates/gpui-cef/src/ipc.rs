@@ -321,8 +321,8 @@ pub fn format_network_log(raw_json: &str, include_preview: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AsyncScriptResult, IpcMessage, format_network_log, generate_ipc_token, origin_from_url,
-        parse_ipc_message,
+        format_network_log, generate_ipc_token, origin_from_url, parse_ipc_message,
+        AsyncScriptResult, IpcMessage,
     };
 
     #[test]
@@ -357,34 +357,28 @@ mod tests {
             ),
             Some(IpcMessage::Dom(payload)) if payload.title == "Example"
         ));
-        assert!(
-            parse_ipc_message(
-                "https://evil.com/",
-                Some("https://example.com"),
-                token,
-                &dom
-            )
-            .is_none()
-        );
+        assert!(parse_ipc_message(
+            "https://evil.com/",
+            Some("https://example.com"),
+            token,
+            &dom
+        )
+        .is_none());
         assert!(parse_ipc_message("https://example.com/", None, token, &dom).is_none());
-        assert!(
-            parse_ipc_message(
-                "https://example.com/",
-                Some("https://example.com"),
-                "wrong",
-                &dom
-            )
-            .is_none()
-        );
-        assert!(
-            parse_ipc_message(
-                "https://example.com/",
-                Some("https://example.com"),
-                token,
-                &"x".repeat(270_000)
-            )
-            .is_none()
-        );
+        assert!(parse_ipc_message(
+            "https://example.com/",
+            Some("https://example.com"),
+            "wrong",
+            &dom
+        )
+        .is_none());
+        assert!(parse_ipc_message(
+            "https://example.com/",
+            Some("https://example.com"),
+            token,
+            &"x".repeat(270_000)
+        )
+        .is_none());
 
         let network = serde_json::json!({
             "kind": "network",
@@ -431,15 +425,13 @@ mod tests {
             "result": "x".repeat(32_001)
         })
         .to_string();
-        assert!(
-            parse_ipc_message(
-                "https://example.com/",
-                Some("https://example.com"),
-                token,
-                &oversized_result
-            )
-            .is_none()
-        );
+        assert!(parse_ipc_message(
+            "https://example.com/",
+            Some("https://example.com"),
+            token,
+            &oversized_result
+        )
+        .is_none());
     }
 
     #[test]

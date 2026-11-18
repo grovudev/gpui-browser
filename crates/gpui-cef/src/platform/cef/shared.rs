@@ -16,7 +16,7 @@ use cef::{
     FileDialogCallback, ImplBeforeDownloadCallback, ImplBrowser, ImplDownloadItemCallback,
     ImplFileDialogCallback, ImplJsdialogCallback, JsdialogCallback,
 };
-use gpui::{Bounds, CursorStyle, Pixels, RenderImage, Size, px, size};
+use gpui::{px, size, Bounds, CursorStyle, Pixels, RenderImage, Size};
 
 use super::pending::{Abort, Cancel, Downloads, Pending, Proceed};
 use crate::{DialogId, DownloadId, DownloadState, FileDialogId, WebviewEvent};
@@ -124,6 +124,8 @@ pub(crate) struct Shared {
     /// Set once the webview is gone. Anything the page asks for after that is
     /// turned down on the spot, since nobody is left to answer.
     closed: Cell<bool>,
+    /// Whether the webview surface is currently visible on screen.
+    visible: Cell<bool>,
 }
 
 /// The answer a JavaScript dialog is waiting for.
@@ -207,7 +209,16 @@ impl Shared {
             file_dialogs: Pending::default(),
             downloads: Downloads::default(),
             closed: Cell::new(false),
+            visible: Cell::new(true),
         })
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.visible.get()
+    }
+
+    pub(crate) fn set_visible(&self, visible: bool) -> bool {
+        self.visible.replace(visible) != visible
     }
 
     /// Whether the webview has gone; see [`Shared::close`].
@@ -581,7 +592,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Bounds, point};
+    use gpui::{point, Bounds};
     use proptest::prelude::*;
     use std::collections::BTreeSet;
 
