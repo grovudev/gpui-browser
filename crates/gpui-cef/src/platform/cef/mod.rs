@@ -185,9 +185,24 @@ impl Runtime {
             let executable_dir = executable
                 .parent()
                 .ok_or_else(|| Error::LibraryLoad(executable.display().to_string()))?;
+            let resources_dir = if let Some(dir) = self
+                .0
+                .options
+                .engine_dir
+                .as_deref()
+                .filter(|dir| crate::is_engine_dir_valid(dir))
+            {
+                dir.to_path_buf()
+            } else if crate::is_engine_dir_valid(executable_dir) {
+                executable_dir.to_path_buf()
+            } else if let Some(sdk_dir) = crate::EngineSdk::default().resolve_host_engine_dir() {
+                sdk_dir
+            } else {
+                executable_dir.to_path_buf()
+            };
             settings.browser_subprocess_path = executable.to_string_lossy().as_ref().into();
-            settings.resources_dir_path = executable_dir.to_string_lossy().as_ref().into();
-            settings.locales_dir_path = executable_dir
+            settings.resources_dir_path = resources_dir.to_string_lossy().as_ref().into();
+            settings.locales_dir_path = resources_dir
                 .join("locales")
                 .to_string_lossy()
                 .as_ref()
@@ -249,6 +264,45 @@ impl Drop for RuntimeInner {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn sync_engine_files_near_executable(engine_dir: &std::path::Path) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(exe_dir) = exe.parent() else {
+        return;
+    };
+    if exe_dir == engine_dir || exe_dir.join("icudtl.dat").exists() {
+        return;
+    }
+
+    const RUNTIME_ENTRIES: &[&str] = &[
+        "icudtl.dat",
+        "v8_context_snapshot.bin",
+        "resources.pak",
+        "chrome_100_percent.pak",
+        "chrome_200_percent.pak",
+        "locales",
+    ];
+    for name in RUNTIME_ENTRIES {
+        let src = engine_dir.join(name);
+        let dst = exe_dir.join(name);
+        if src.exists() && !dst.exists() {
+            #[cfg(unix)]
+            {
+                let _ = std::os::unix::fs::symlink(&src, &dst);
+            }
+            #[cfg(windows)]
+            {
+                if src.is_file() {
+                    let _ = std::fs::hard_link(&src, &dst)
+                        .or_else(|_| std::fs::copy(&src, &dst).map(|_| ()));
+                }
+            }
+        }
+    }
+}
+
 /// Loads CEF into the process. Call this **at the top of `main`**, before
 /// `gpui::application()`. The actual initialization happens in
 /// [`Runtime::start`].
@@ -280,6 +334,11 @@ pub fn init(options: RuntimeOptions) -> crate::Result<Runtime> {
     #[cfg(target_os = "macos")]
     if !loader.load() {
         return Err(Error::LibraryLoad(exe.display().to_string()));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    if let Some(engine_dir) = options.engine_dir.as_deref() {
+        sync_engine_files_near_executable(engine_dir);
     }
 
     // Pin the API version. This has to happen before any handler is registered.

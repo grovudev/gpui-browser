@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cef = { workspace = true, features = ["sandbox"] }
+download-cef = "3.0.1"
 gpui.workspace = true
 image = "0.25"
 log.workspace = true

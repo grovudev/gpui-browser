@@ -2381,6 +2381,7 @@ dependencies = [
  "cef",
  "core-foundation 0.10.0",
  "core-video",
+ "download-cef",
  "gpui-kit",
  "image",
  "io-surface",
@@ -8693,6 +8694,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "cef",
+ "gpui-cef",
  "semver",
 ]
 

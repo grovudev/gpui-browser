@@ -8,4 +8,5 @@ publish = false
 [dependencies]
 anyhow = "1"
 cef = { workspace = true, features = ["build-util"] }
+gpui-cef = { path = "../crates/gpui-cef" }
 semver = "1"

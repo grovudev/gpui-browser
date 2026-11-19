@@ -55,8 +55,13 @@ mod options;
 mod platform;
 
 pub mod automation;
+pub mod download;
 
 pub use automation::ViewportMode;
+pub use download::{
+    download_all_engines, download_engine, download_engines, is_engine_dir_valid, EngineSdk,
+    EngineTarget, CEF_PACKAGE_VERSION,
+};
 pub use event::{
     DialogId, DownloadId, DownloadState, FileDialogId, FileDialogMode, JsDialogKind,
     TerminationStatus, WebviewEvent, WebviewState,

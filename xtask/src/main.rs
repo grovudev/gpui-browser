@@ -1,28 +1,52 @@
+use std::path::PathBuf;
+
 const EXECUTABLE: &str = "gpui-cef-browser";
 
 fn main() -> anyhow::Result<()> {
-    let app = bundle()?;
-    if std::env::args().nth(1).as_deref() == Some("run") {
-        launch(app)?;
-    } else {
-        println!("{}", app.display());
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("download") => {
+            let target_spec = args.next().unwrap_or_else(|| "all".to_string());
+            let out_dir = args
+                .next()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("target/cef-engines"));
+            let targets = gpui_cef::EngineTarget::parse_targets(&target_spec)?;
+            let downloaded = gpui_cef::download_engines(&targets, &out_dir, true)?;
+            for (target, path) in downloaded {
+                println!("{target}: {}", path.display());
+            }
+        }
+        Some("run") => {
+            let app = bundle()?;
+            launch(app)?;
+        }
+        Some("bundle") | None => {
+            let app = bundle()?;
+            println!("{}", app.display());
+        }
+        Some(other) => {
+            anyhow::bail!(
+                "unknown xtask command '{other}' (expected 'bundle', 'run', or 'download [targets] [out_dir]')"
+            );
+        }
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn launch(app: std::path::PathBuf) -> anyhow::Result<()> {
+fn launch(app: PathBuf) -> anyhow::Result<()> {
     let status = std::process::Command::new("open").arg(app).status()?;
     check_status(status)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn launch(app: std::path::PathBuf) -> anyhow::Result<()> {
+fn launch(app: PathBuf) -> anyhow::Result<()> {
     check_status(std::process::Command::new(app).status()?)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn launch(_app: std::path::PathBuf) -> anyhow::Result<()> {
+fn launch(_app: PathBuf) -> anyhow::Result<()> {
     anyhow::bail!("CEF bundles are only supported on macOS, Linux, and Windows")
 }
 
@@ -35,10 +59,10 @@ fn check_status(status: std::process::ExitStatus) -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn bundle() -> anyhow::Result<std::path::PathBuf> {
+fn bundle() -> anyhow::Result<PathBuf> {
     use cef::build_util::mac::{build_bundle, BundleInfo};
 
-    let out_dir = std::path::PathBuf::from("target/bundle");
+    let out_dir = PathBuf::from("target/bundle");
     std::fs::create_dir_all(&out_dir)?;
 
     build_bundle(
@@ -56,8 +80,8 @@ fn bundle() -> anyhow::Result<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
-fn bundle() -> anyhow::Result<std::path::PathBuf> {
-    let out_dir = std::path::PathBuf::from("target/bundle");
+fn bundle() -> anyhow::Result<PathBuf> {
+    let out_dir = PathBuf::from("target/bundle");
     std::fs::create_dir_all(&out_dir)?;
 
     cef::build_util::linux::build_bundle(&out_dir, EXECUTABLE, false)
@@ -78,8 +102,8 @@ fn bundle() -> anyhow::Result<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn bundle() -> anyhow::Result<std::path::PathBuf> {
-    let out_dir = std::path::PathBuf::from("target/bundle");
+fn bundle() -> anyhow::Result<PathBuf> {
+    let out_dir = PathBuf::from("target/bundle");
     std::fs::create_dir_all(&out_dir)?;
 
     cef::build_util::win::build_bundle(&out_dir, EXECUTABLE, false)
@@ -87,6 +111,6 @@ fn bundle() -> anyhow::Result<std::path::PathBuf> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn bundle() -> anyhow::Result<std::path::PathBuf> {
+fn bundle() -> anyhow::Result<PathBuf> {
     anyhow::bail!("CEF bundles are only supported on macOS, Linux, and Windows")
 }

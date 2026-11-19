@@ -6,6 +6,8 @@ pub struct RuntimeOptions {
     pub remote_debugging_port: Option<u16>,
     /// Where CEF keeps its cache. `None` means in-memory / throwaway.
     pub cache_path: Option<std::path::PathBuf>,
+    /// Optional directory containing the extracted CEF engine resources (`icudtl.dat`, `locales/`, etc.).
+    pub engine_dir: Option<std::path::PathBuf>,
     /// Log to stderr.
     pub log_to_stderr: bool,
     /// Where CEF writes its log file. Chromium CHECK failures land here, which
@@ -19,6 +21,7 @@ impl Default for RuntimeOptions {
         Self {
             remote_debugging_port: None,
             cache_path: None,
+            engine_dir: None,
             log_to_stderr: cfg!(debug_assertions),
             log_file: None,
         }
