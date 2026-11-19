@@ -213,6 +213,7 @@ impl Shared {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub(crate) fn is_visible(&self) -> bool {
         self.visible.get()
     }
