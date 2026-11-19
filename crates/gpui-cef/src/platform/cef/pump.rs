@@ -218,8 +218,9 @@ pub(crate) fn register(
     shared: Rc<Shared>,
     accelerated: bool,
     webview: WeakEntity<Webview>,
-    cx: AsyncApp,
+    cx: &mut gpui::Context<Webview>,
 ) -> Registration {
+    let cx = cx.to_async();
     PUMP.with(|slot| {
         let mut slot = slot.borrow_mut();
         let pump = slot.get_or_insert_with(Pump::start);

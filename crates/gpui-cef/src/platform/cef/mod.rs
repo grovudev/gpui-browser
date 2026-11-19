@@ -51,8 +51,6 @@ use cef::{
     BrowserSettings, CefString, CookieVisitor, ImplBrowser, ImplBrowserHost, ImplCookieManager,
     ImplCookieVisitor, ImplFrame, ImplRequestContext, Settings, WindowInfo, WrapCookieVisitor,
 };
-#[cfg(target_os = "macos")]
-use gpui::surface;
 use gpui::{
     div, point, px, relative, AnyElement, App, Bounds, Context, Element, ElementId, Focusable,
     GlobalElementId, Hitbox, HitboxBehavior, ImageSource, InspectorElementId, InteractiveElement,
@@ -962,10 +960,7 @@ impl WebviewSurface {
 fn frame_element(frame: &Frame) -> AnyElement {
     match frame {
         #[cfg(target_os = "macos")]
-        Frame::Accelerated(buffer) => surface(buffer.clone())
-            .object_fit(ObjectFit::Fill)
-            .size_full()
-            .into_any_element(),
+        Frame::Accelerated(_) => div().size_full().into_any_element(),
         Frame::Cpu(image) => gpui::img(ImageSource::Render(image.clone()))
             .object_fit(ObjectFit::Fill)
             .size_full()
