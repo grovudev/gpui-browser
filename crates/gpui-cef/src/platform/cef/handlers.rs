@@ -1088,6 +1088,11 @@ fn handle_key_event(browser: Option<&mut Browser>, event: Option<&KeyEvent>) -> 
     1
 }
 
+#[allow(clippy::unnecessary_cast)]
+fn clipboard_permission_bit() -> u32 {
+    PermissionRequestTypes::CLIPBOARD.get_raw() as u32
+}
+
 // Return None for unrelated permissions so their existing CEF behavior remains
 // unchanged. Never approve a combined request: ACCEPT applies to every bit.
 fn clipboard_permission_result(
@@ -1095,7 +1100,7 @@ fn clipboard_permission_result(
     origin: &str,
     permissions: u32,
 ) -> Option<PermissionRequestResult> {
-    let clipboard = PermissionRequestTypes::CLIPBOARD.get_raw();
+    let clipboard = clipboard_permission_bit();
     if permissions & clipboard == 0 {
         return None;
     }
@@ -1294,7 +1299,7 @@ mod tests {
     #[test]
     fn clipboard_permissions_deny_by_default_and_only_accept_the_approved_origin() {
         let mut options = WebviewOptions::default();
-        let clipboard = PermissionRequestTypes::CLIPBOARD.get_raw();
+        let clipboard = clipboard_permission_bit();
         assert_eq!(
             clipboard_permission_result(&options, "https://editor.example", clipboard),
             Some(PermissionRequestResult::DENY)
@@ -1325,7 +1330,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let clipboard = PermissionRequestTypes::CLIPBOARD.get_raw();
+        let clipboard = clipboard_permission_bit();
         assert_eq!(
             clipboard_permission_result(&options, "https://editor.example", 0),
             None
@@ -1358,13 +1363,7 @@ mod tests {
             .expect("clipboard requests must get an answer");
         // Without a CEF callback, the request cannot be completed here.
         assert_eq!(
-            handler.on_show_permission_prompt(
-                None,
-                1,
-                None,
-                PermissionRequestTypes::CLIPBOARD.get_raw(),
-                None
-            ),
+            handler.on_show_permission_prompt(None, 1, None, clipboard_permission_bit(), None),
             0
         );
     }
