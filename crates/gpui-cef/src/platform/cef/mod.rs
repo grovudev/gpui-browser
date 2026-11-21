@@ -198,7 +198,13 @@ impl Runtime {
             } else {
                 executable_dir.to_path_buf()
             };
-            settings.browser_subprocess_path = executable.to_string_lossy().as_ref().into();
+            let subprocess = self
+                .0
+                .options
+                .browser_subprocess_path
+                .as_deref()
+                .unwrap_or(executable.as_path());
+            settings.browser_subprocess_path = subprocess.to_string_lossy().as_ref().into();
             settings.resources_dir_path = resources_dir.to_string_lossy().as_ref().into();
             settings.locales_dir_path = resources_dir
                 .join("locales")
